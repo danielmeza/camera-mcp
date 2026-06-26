@@ -119,10 +119,12 @@ A path guard ensures it can only delete **within** the configured output directo
 location on the host. Returns `filesDeleted`, `directoriesDeleted`, and `bytesFreed`.
 
 ### `start_preview` / `stop_preview` (live view for a human)
-Starts a **live MJPEG preview** of a camera that a **human** can watch in a browser, and returns the URL.
-The stream is loopback-only (`127.0.0.1`) and **token-gated**; set `tunnel=cloudflare|devtunnel|auto` to
-expose a public URL via an installed tunnel tool (`cloudflared` / `devtunnel`), with graceful fallback to
-the local URL if none is installed. One viewer at a time; the device is held while watching.
+Starts a **live MJPEG preview** of a camera that a **human** can watch in a browser, and returns
+`{ previewId, localUrl, streamUrl }`. The stream is served by the built-in web host (loopback by default;
+see [Networking](#networking--remote-access)) and **token-gated**; set `tunnel=cloudflare|devtunnel|auto`
+to expose a public URL, with graceful fallback to the local URL if no tunnel tool is installed. One viewer
+at a time per preview; the camera is held only while someone is watching. **`stop_preview`** takes the
+`previewId`. Multiple previews can run at once.
 
 > An **LLM agent cannot consume a live video stream** — MCP has no video type. For the *model*, use
 > `capture_image` / `capture_scene` (discrete frames). `start_preview` is for a person to watch.
@@ -146,12 +148,12 @@ recording runs. Jobs for **different cameras run in parallel**; jobs for the **s
 Let **something other than the agent** decide *when* to shoot. The agent starts a session; a remote or
 embedded device (or a person) triggers each capture over HTTP; the agent receives the captures in order.
 
-- **`start_capture_session`** — opens a **token-gated** loopback HTTP endpoint (optionally exposed via a
-  `cloudflare`/`devtunnel` tunnel) and returns `{ sessionId, token, triggerUrl, tunnelTriggerUrl }`.
-  Params: `deviceId?`, `width?`/`height?`, `format` (`jpeg`), `quality` (85), `burstCount` (`1`),
-  `burstIntervalSeconds` (`0.3`), `tunnel` (`none`).
+- **`start_capture_session`** — registers a **token-gated** endpoint on the built-in web host and returns
+  `{ sessionId, token, triggerUrl, tunnelTriggerUrl }`. `triggerUrl` is
+  `<baseUrl>/sessions/{sessionId}/trigger?token=…`. Params: `deviceId?`, `width?`/`height?`, `format`
+  (`jpeg`), `quality` (85), `burstCount` (`1`), `burstIntervalSeconds` (`0.3`), `tunnel` (`none`).
 - The device **`POST`s the trigger URL** (token in `?token=` or the `X-Session-Token` header) to capture.
-  It can also **`GET /session`** (with the token) to discover the current `sessionId`.
+  It can also **`GET /sessions/{sessionId}`** (with the token) to health-check / discover the session.
 - **Rapid-fire bursts** — a trigger captures `burstCount` frames at `burstIntervalSeconds` apart; either
   the session default or a **per-trigger override**. The whole burst is delivered to the agent as one
   capture (multiple inline frames).
@@ -162,21 +164,43 @@ embedded device (or a person) triggers each capture over HTTP; the agent receive
 - **`await_capture`** — long-polls for the next trigger and returns the still **or** the whole burst
   (inline images + resource links) plus its `name`/`description`/`seq`; call it in a loop to follow the
   stream. Returns a `waiting` status if nothing triggers within `waitSeconds`.
-- **`stop_capture_session`** — tears the session (and any tunnel) down.
+- **`stop_capture_session`** — tears the session (and any tunnel) down by `sessionId`.
 
-One session is active at a time; starting another replaces it. Triggers capture through the same
-per-device lock as every other capture, so a session and a preview never open the camera at once.
+Many sessions can run at once; each session's token only works for its own routes. Triggers capture through
+the same per-device lock as every other capture, so a session and a preview never open the camera at once.
 
 ### On-demand public tunnels
-The agent can expose any local endpoint (a live preview, a capture session's trigger URL) **publicly** on
-its own, without restarting it with `tunnel=…`:
+The agent can expose the built-in web host (which serves the preview + session endpoints) **publicly** on
+its own, without restarting anything with `tunnel=…`:
 
-- **`start_tunnel`** — `{ port, provider? }` → starts a Cloudflare quick tunnel (default) or a Microsoft
-  Dev Tunnel to that loopback `port` and returns `{ tunnelId, publicUrl }`. Take the `port` from the
-  local URL of the preview/session you want to share. Returns a note + null URL if the tool isn't installed.
+- **`start_tunnel`** — `{ port?, provider? }` → starts a Cloudflare quick tunnel (default) or a Microsoft
+  Dev Tunnel and returns `{ tunnelId, publicUrl }`. **Omit `port`** to expose this server's own web host;
+  pass a port only to expose a different local server. Returns a note + null URL if the tool isn't installed.
 - **`stop_tunnel`** — `{ tunnelId }`. **`list_tunnels`** — the active tunnels and their public URLs.
 
+> Because every session and preview shares one web-host port, a single tunnel exposes them all — but each
+> remains independently token-gated, so a public URL is useless without the right per-endpoint token.
+
 Requires `cloudflared` / `devtunnel` on `PATH` (see [INSTALL.md](INSTALL.md)).
+
+## Networking & remote access
+
+The server runs a built-in **Kestrel** web host (alongside the stdio MCP transport) that serves the device
+trigger endpoints, the live preview, and — optionally — the MCP protocol itself. By default it binds
+**loopback only** (`127.0.0.1`, OS-assigned port), so off-box access goes through a tunnel.
+
+- **Direct LAN access** — set `CameraMcp__HttpBindAddress=0.0.0.0` (and optionally `CameraMcp__HttpPort`)
+  so a device on the same network reaches the host's LAN IP directly, no tunnel/internet required. URLs are
+  built from the resolved LAN IP (override with `CameraMcp__PublicBaseUrl` behind a reverse proxy).
+- **Remote MCP server** — set `CameraMcp__EnableHttpMcp=true` to also expose the MCP server over
+  **Streamable HTTP** at `CameraMcp__HttpMcpPath` (default `/mcp`), so a *remote* agent can drive a
+  networked camera (e.g. camera-mcp running on a Pi). Gate it with `CameraMcp__HttpMcpBearerToken`
+  (clients send `Authorization: Bearer <token>`). For a pure-HTTP deployment, set
+  `CameraMcp__StdioTransport=false` so the process doesn't exit on stdin EOF.
+
+> Exposing camera control to a network is powerful — always bind with auth (a per-session token for device
+> endpoints, a bearer token for `/mcp`) and prefer a tunnel (HTTPS) or a TLS-terminating proxy over plain
+> HTTP on untrusted networks.
 
 ## Transmitting images over MCP (no file path needed)
 
@@ -207,7 +231,9 @@ your own `.claude/skills/` (or a plugin) to give the agent guidance and sample c
 
 ## Requirements
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (the SDK includes the ASP.NET Core
+  runtime the server now hosts; the self-contained build bundles it, but the `dnx`/NuGet path needs the
+  ASP.NET Core 10 runtime present).
 - FFmpeg — either bundled at publish time (see [INSTALL.md](INSTALL.md)) or available on `PATH`.
 
 ## Build, test, run
@@ -252,6 +278,13 @@ Settings bind from environment variables with the `CameraMcp__` prefix:
 | `CameraMcp__ImageWarmupFrames` | `15` | frames discarded before a still (avoids cold black frames) |
 | `CameraMcp__FFmpegPath` | — | explicit ffmpeg path (overrides discovery) |
 | `CameraMcp__FFmpegTimeoutSeconds` | `120` | encode headroom beyond the recording duration |
+| `CameraMcp__HttpBindAddress` | `127.0.0.1` | web-host bind: loopback, `0.0.0.0`/`lan`, or a specific IP |
+| `CameraMcp__HttpPort` | `0` | web-host port (`0` = OS-assigned) |
+| `CameraMcp__PublicBaseUrl` | — | override for device-facing URLs (reverse proxy / custom domain) |
+| `CameraMcp__StdioTransport` | `true` | serve the stdio MCP transport (set `false` for a pure-HTTP host) |
+| `CameraMcp__EnableHttpMcp` | `false` | also expose the MCP server over Streamable HTTP for remote agents |
+| `CameraMcp__HttpMcpPath` | `/mcp` | route for the HTTP MCP transport |
+| `CameraMcp__HttpMcpBearerToken` | — | bearer token required on the HTTP MCP endpoint (recommended off-loopback) |
 
 ## Bundling FFmpeg (zero-setup distribution)
 
@@ -282,7 +315,8 @@ Override the source for a RID without a default with `-p:FFmpegDownloadUrl=<url>
 
 ## Scope
 
-stdio transport (the camera hardware is local to the host). Captures are delivered to the **model** as
-discrete frames — inline images, resource links, or MCP resources — since MCP has no live-video type;
-`start_preview` offers a live MJPEG view for a **human** only. Async captures (`queue_*`) and
-device-triggered sessions are supported. Audio capture is not enabled.
+Local agents connect over **stdio**; remote agents can optionally connect over **Streamable HTTP**
+(`EnableHttpMcp`). Captures are delivered to the **model** as discrete frames — inline images, resource
+links, or MCP resources — since MCP has no live-video type; `start_preview` offers a live MJPEG view for a
+**human** only. Async captures (`queue_*`), device-triggered sessions, on-demand tunnels, and LAN/remote
+binding are supported. Audio capture is not enabled.

@@ -65,6 +65,8 @@ start_capture_session { "deviceId": "0", "burstCount": 1, "tunnel": "cloudflare"
 | `count` | **rapid-fire burst** size (frames captured this trigger) |
 | `interval` | seconds between burst frames |
 
+`triggerUrl` is `<baseUrl>/sessions/{sessionId}/trigger?token=…` — hand the device the whole URL.
+
 ```bash
 # single still, labelled
 curl -X POST "$TRIGGER_URL&name=front-door&description=motion%20detected"
@@ -72,8 +74,8 @@ curl -X POST "$TRIGGER_URL&name=front-door&description=motion%20detected"
 # a 5-frame rapid-fire burst, 0.2s apart
 curl -X POST "$TRIGGER_URL&name=swing&description=golf%20follow-through&count=5&interval=0.2"
 
-# discover the current session id (device knows the token, not the id)
-curl "http://127.0.0.1:PORT/session?token=$TOKEN"
+# health-check / discover the session (token required)
+curl "$BASE_URL/sessions/$SESSION_ID?token=$TOKEN"
 ```
 
 **Receive** with `await_capture` in a loop:
@@ -86,26 +88,37 @@ It returns a status block (`seq`, `kind` = `still`|`burst`, `frameCount`, the de
 `description`) followed by the image(s). A burst comes back as one capture with all its frames inline.
 A `waiting` status means nothing triggered within `waitSeconds` — just call it again.
 
-> Only one session is active at a time; starting another replaces it. Triggers share the per-device lock
-> with every other capture, so a session and a preview never open the same camera at once.
+> Many sessions can run at once; each session's token only works for its own routes. Triggers share the
+> per-device lock with every other capture, so a session and a preview never open the same camera at once.
+
+**Reaching the device endpoint.** By default the host binds loopback, so a remote/LAN device needs a
+tunnel (`tunnel: "cloudflare"` → a public HTTPS `tunnelTriggerUrl`). For a device on the **same Wi-Fi**,
+start the server with `CameraMcp__HttpBindAddress=0.0.0.0` and the trigger URL uses the host's LAN IP
+directly — no tunnel/internet needed.
 
 ## 5. Let a human WATCH (live preview)
 
 You can't consume a live video stream (MCP has no video type) — for *you*, use `capture_image` /
 `capture_scene`. For a **person** to watch, **`start_preview`** serves a token-gated MJPEG page and
-returns its URL; **`stop_preview`** ends it. Add `tunnel` to expose it publicly.
+returns `{ previewId, localUrl }`; **`stop_preview { previewId }`** ends it. Add `tunnel` to expose it
+publicly. Multiple previews can run at once.
 
 ## 6. Expose an endpoint publicly (on-demand tunnels)
 
 If you started a session or preview with `tunnel: "none"` and later need a public URL, do it yourself:
 
 ```json
-start_tunnel { "port": 53017, "provider": "cloudflare" }   // → { tunnelId, publicUrl }
+start_tunnel { "provider": "cloudflare" }   // → { tunnelId, publicUrl }
 ```
 
-Take `port` from the local URL of the session/preview you want to share. Then hand the device
-`<publicUrl>/trigger?token=<token>`. **`stop_tunnel`** / **`list_tunnels`** manage them. Needs
+**Omit `port`** to expose this server's own web host (which serves all sessions + previews); the device
+then uses `<publicUrl>/sessions/{sessionId}/trigger?token=<token>`. One tunnel exposes every endpoint on
+the host, but each stays token-gated. **`stop_tunnel`** / **`list_tunnels`** manage them. Needs
 `cloudflared` (or `devtunnel`) on `PATH`; if it's missing you get a note and a null URL.
+
+To let a **remote agent** drive this camera (not just a device), run the server with
+`CameraMcp__EnableHttpMcp=true` + `CameraMcp__HttpMcpBearerToken=<secret>` and connect to
+`https://<host>/mcp` with `Authorization: Bearer <secret>`.
 
 ## 7. Re-read a saved capture
 

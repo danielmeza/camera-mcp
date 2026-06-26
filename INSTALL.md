@@ -5,13 +5,17 @@ Three ways to run the server:
 - **[A. Self-contained build](#a-self-contained-build-recommended-for-shipping)** — one standalone folder
   with the .NET runtime *and* ffmpeg bundled in. The target machine needs **nothing** installed. Best for
   shipping to others. (Also published as per-OS archives on the [GitHub Releases](https://github.com/danielmeza/camera-mcp/releases) page.)
-- **C. From NuGet** — `dnx DanielMeza.CameraMcp` (needs the .NET 10 SDK and **ffmpeg on `PATH`**). The
-  lightweight option; an MCP client entry looks like:
+- **C. From NuGet** — `dnx DanielMeza.CameraMcp` (needs the .NET 10 SDK + **ASP.NET Core 10 runtime** and
+  **ffmpeg on `PATH`**). The lightweight option; an MCP client entry looks like:
   ```jsonc
   { "command": "dnx", "args": ["DanielMeza.CameraMcp", "--yes"] }
   ```
 - **[B. From source](#b-from-source-for-development)** — `dotnet run`; needs the .NET 10 SDK and ffmpeg
   on `PATH`. Best while developing.
+
+> The server hosts a small ASP.NET Core (Kestrel) web endpoint next to the stdio transport. The
+> self-contained build (A) bundles the ASP.NET Core runtime; the framework-dependent paths (B/C) require
+> the **ASP.NET Core 10 runtime** installed (it ships with the .NET SDK).
 
 Then **[register it with your MCP client](#register-with-an-mcp-client)**.
 
@@ -157,6 +161,27 @@ Set via environment variables in your client's `env` block (prefix `CameraMcp__`
 | `CameraMcp__ImageWarmupFrames` | `15` | frames discarded before a still (avoids cold black frames) |
 | `CameraMcp__FFmpegPath` | — | explicit ffmpeg path (overrides discovery) |
 | `CameraMcp__FFmpegTimeoutSeconds` | `120` | encode headroom beyond the recording duration |
+| `CameraMcp__HttpBindAddress` | `127.0.0.1` | web-host bind (`0.0.0.0`/`lan` for same-network devices) |
+| `CameraMcp__HttpPort` | `0` | web-host port (`0` = OS-assigned) |
+| `CameraMcp__EnableHttpMcp` | `false` | also expose the MCP server over Streamable HTTP (remote agents) |
+| `CameraMcp__HttpMcpBearerToken` | — | bearer token required on the `/mcp` endpoint |
+| `CameraMcp__StdioTransport` | `true` | set `false` for a pure-HTTP deployment |
+
+## Exposing the server on a network
+
+The server runs a built-in Kestrel host (loopback only by default) that serves the device trigger
+endpoints, the live preview, and — optionally — the MCP protocol itself.
+
+- **Same-network devices (LAN):** set `CameraMcp__HttpBindAddress=0.0.0.0`. Trigger/preview URLs are then
+  built from the host's LAN IP, so an ESP32/board on the same Wi-Fi can reach them directly — no admin/URL
+  reservation needed (Kestrel binds without elevation), no internet required.
+- **Public/internet:** prefer a tunnel (`start_tunnel`, or `tunnel=cloudflare` on a session/preview) — it
+  gives an HTTPS URL with no firewall changes — or front the host with a TLS-terminating reverse proxy and
+  set `CameraMcp__PublicBaseUrl`.
+- **Remote MCP server:** to let a *remote agent* drive a networked camera, run with
+  `CameraMcp__EnableHttpMcp=true` (maps `/mcp`), `CameraMcp__HttpMcpBearerToken=<secret>`, and
+  `CameraMcp__StdioTransport=false`. The agent connects to `https://<host>/mcp` with
+  `Authorization: Bearer <secret>`.
 
 ## Verify the install
 
