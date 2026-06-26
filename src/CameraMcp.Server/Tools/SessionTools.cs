@@ -38,6 +38,10 @@ public sealed class SessionTools
         int? width = null, int? height = null,
         [Description("jpeg, png, or webp. Default jpeg.")] string? format = null,
         [Description("Quality 1-100. Default 85.")] int quality = 85,
+        [Description("Default frames per trigger; 1 = single still, >1 = rapid-fire burst. A trigger can override it.")]
+        int burstCount = 1,
+        [Description("Default seconds between burst frames when a trigger doesn't specify one. Default 0.3.")]
+        double burstIntervalSeconds = 0.3,
         [Description("Expose the trigger endpoint publicly: 'cloudflare', 'devtunnel', or 'none' (default).")]
         string? tunnel = null,
         CancellationToken cancellationToken = default)
@@ -51,6 +55,8 @@ public sealed class SessionTools
                 Height = height,
                 Format = ImageFormat.FromToken(format, ImageFormat.Jpeg),
                 Quality = quality,
+                BurstCount = burstCount,
+                BurstIntervalSeconds = burstIntervalSeconds,
                 Tunnel = ParseTunnel(tunnel),
             }, cancellationToken).ConfigureAwait(false);
 
@@ -63,7 +69,10 @@ public sealed class SessionTools
                 device = info.DeviceName,
                 tunnel = info.Tunnel.ToString().ToLowerInvariant(),
                 tunnelNote = info.TunnelNote,
-                howToTrigger = "POST the trigger URL (token in ?token= or X-Session-Token header) to capture a still.",
+                howToTrigger =
+                    "POST the trigger URL (token in ?token= or X-Session-Token header) to capture. Optional overrides via " +
+                    "query string or a JSON body: name, description, count (rapid-fire burst size), interval (seconds between burst frames). " +
+                    "Example: POST <triggerUrl>&name=door&description=front%20door&count=5&interval=0.2",
             });
         }
         catch (Exception ex) when (ex is CaptureValidationException or CaptureFailedException or FFmpegNotFoundException)
@@ -85,9 +94,9 @@ public sealed class SessionTools
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Clamp(waitSeconds, 0, MaxWaitSeconds));
-            var frame = await _sessions.AwaitNextAsync(sessionId, timeout, cancellationToken).ConfigureAwait(false);
+            var capture = await _sessions.AwaitNextAsync(sessionId, timeout, cancellationToken).ConfigureAwait(false);
 
-            if (frame is null)
+            if (capture is null)
             {
                 return new List<ContentBlock>
                 {
@@ -102,10 +111,29 @@ public sealed class SessionTools
             {
                 new TextContentBlock
                 {
-                    Text = CameraJson.Serialize(new { sessionId, status = "captured", seq = frame.Seq, triggeredAt = frame.TriggeredAt }),
+                    Text = CameraJson.Serialize(new
+                    {
+                        sessionId,
+                        status = "captured",
+                        seq = capture.Seq,
+                        kind = capture.IsBurst ? "burst" : "still",
+                        frameCount = capture.FrameCount,
+                        name = capture.Name,
+                        description = capture.Description,
+                        triggeredAt = capture.TriggeredAt,
+                    }),
                 },
             };
-            blocks.AddRange(CaptureRendering.Image(frame.Result, _store));
+
+            if (capture.Burst is not null)
+            {
+                blocks.AddRange(CaptureRendering.Scene(capture.Burst, _store));
+            }
+            else if (capture.Still is not null)
+            {
+                blocks.AddRange(CaptureRendering.Image(capture.Still, _store));
+            }
+
             return blocks;
         }
         catch (CaptureValidationException ex)

@@ -66,6 +66,17 @@ dotnet publish src/CameraMcp.Server -c Release -r win-x64 --self-contained \
 
 So you can skip bundling and instead require ffmpeg on `PATH`, or point `CameraMcp__FFmpegPath` at one.
 
+### Optional: public tunnels (for live preview / device sessions)
+
+`start_preview` and `start_capture_session` can expose their loopback endpoint **publicly** through a
+tunnel, so a browser or a remote device can reach it. This is opt-in (`tunnel=cloudflare|devtunnel`) and
+needs the matching tool on `PATH`; without it the server falls back to the local URL and says so:
+
+- **Cloudflare** — install [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (no account needed for a quick tunnel).
+- **Microsoft Dev Tunnels** — install [`devtunnel`](https://learn.microsoft.com/azure/developer/dev-tunnels/get-started).
+
+ffmpeg alone (above) is enough for every capture tool; tunnels are only for the optional public URLs.
+
 ---
 
 ## B. From source (for development)
@@ -158,5 +169,9 @@ printf '%s\n' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./camera-mcp
 ```
 
-You should see `list_cameras`, `capture_image`, and `capture_video` in the response. Logs go to stderr;
-stdout carries only the protocol.
+The response advertises the full tool set — `list_cameras`, `capture_image`, `capture_video`,
+`capture_scene`, `clear_captures`, the live-preview tools (`start_preview` / `stop_preview`), the async
+queue (`queue_image` / `queue_scene` / `queue_video`, `get_capture`, `list_captures`, `cancel_capture`),
+the device-triggered session tools (`start_capture_session` / `await_capture` / `stop_capture_session`),
+and the on-demand tunnel tools (`start_tunnel` / `stop_tunnel` / `list_tunnels`) — plus the `camera://…`
+resources. Logs go to stderr; stdout carries only the protocol.

@@ -25,10 +25,55 @@ public class CaptureSessionServiceTests
             var response = await http.PostAsync(info.TriggerUrl, content: null);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var frame = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
-            Assert.NotNull(frame);
-            Assert.Equal(1, frame!.Seq);
-            Assert.Equal(640, frame.Result.Width);
+            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+            Assert.NotNull(capture);
+            Assert.Equal(1, capture!.Seq);
+            Assert.False(capture.IsBurst);
+            Assert.Equal(640, capture.Still!.Width);
+        }
+        finally
+        {
+            await service.StopAsync(info.SessionId);
+        }
+    }
+
+    [Fact]
+    public async Task Trigger_with_count_produces_a_rapid_fire_burst()
+    {
+        using var service = NewService();
+        var info = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
+        try
+        {
+            using var http = new HttpClient();
+            var response = await http.PostAsync($"{info.TriggerUrl}&count=4&interval=0.1", content: null);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+            Assert.NotNull(capture);
+            Assert.True(capture!.IsBurst);
+            Assert.Equal(4, capture.FrameCount);
+            Assert.NotNull(capture.Burst);
+        }
+        finally
+        {
+            await service.StopAsync(info.SessionId);
+        }
+    }
+
+    [Fact]
+    public async Task Trigger_carries_name_and_description_to_the_agent()
+    {
+        using var service = NewService();
+        var info = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
+        try
+        {
+            using var http = new HttpClient();
+            await http.PostAsync($"{info.TriggerUrl}&name=front-door&description=motion%20detected", content: null);
+
+            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+            Assert.NotNull(capture);
+            Assert.Equal("front-door", capture!.Name);
+            Assert.Equal("motion detected", capture.Description);
         }
         finally
         {
@@ -130,9 +175,16 @@ public class CaptureSessionServiceTests
         public Task<IAsyncDisposable> AcquireDeviceLockAsync(string lockKey, CancellationToken cancellationToken) =>
             Task.FromResult<IAsyncDisposable>(new NoopLock());
 
+        public Task<SceneCaptureResult> CaptureSceneAsync(SceneCaptureOptions options, CancellationToken cancellationToken)
+        {
+            var frames = Enumerable.Range(1, options.FrameCount)
+                .Select(i => new SceneFrame(i, $"/tmp/frame-{i}.jpg", 3, [1, 2, 3]))
+                .ToList();
+            return Task.FromResult(new SceneCaptureResult("cam", ImageFormat.Jpeg, 640, 480, "/tmp/scene", frames));
+        }
+
         public Task<IReadOnlyList<CameraDevice>> ListDevicesAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<VideoCaptureResult> CaptureVideoAsync(VideoCaptureOptions options, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<SceneCaptureResult> CaptureSceneAsync(SceneCaptureOptions options, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         private sealed class NoopLock : IAsyncDisposable
         {

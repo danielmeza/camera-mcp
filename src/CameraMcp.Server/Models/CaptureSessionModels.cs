@@ -9,6 +9,21 @@ public sealed class SessionStartOptions
     public ImageFormat Format { get; init; } = ImageFormat.Jpeg;
     public int Quality { get; init; } = 85;
     public TunnelProvider Tunnel { get; init; } = TunnelProvider.None;
+
+    /// <summary>Default frames captured per trigger (1 = single still). A trigger can override it.</summary>
+    public int BurstCount { get; init; } = 1;
+
+    /// <summary>Default seconds between burst frames when the trigger doesn't specify one.</summary>
+    public double BurstIntervalSeconds { get; init; } = 0.3;
+}
+
+/// <summary>Optional per-trigger overrides a device can send (query string or JSON body).</summary>
+public sealed class TriggerRequest
+{
+    public string? Name { get; init; }
+    public string? Description { get; init; }
+    public int? Count { get; init; }
+    public double? IntervalSeconds { get; init; }
 }
 
 /// <summary>Details of a running capture session returned to the agent.</summary>
@@ -28,8 +43,22 @@ public sealed record SessionInfo(
     TunnelProvider Tunnel,
     string? TunnelNote);
 
-/// <summary>A single capture produced by a device trigger.</summary>
+/// <summary>A capture produced by one device trigger — a single still or a rapid-fire burst.</summary>
 /// <param name="Seq">1-based trigger sequence number within the session.</param>
-/// <param name="Result">The captured still.</param>
 /// <param name="TriggeredAt">When the device fired the trigger.</param>
-public sealed record TriggeredFrame(int Seq, ImageCaptureResult Result, DateTimeOffset TriggeredAt);
+/// <param name="Name">Optional caller-supplied label for this capture.</param>
+/// <param name="Description">Optional caller-supplied description for this capture.</param>
+/// <param name="Still">The captured still (single-frame triggers), else null.</param>
+/// <param name="Burst">The captured sequence (rapid-fire triggers), else null.</param>
+public sealed record TriggeredCapture(
+    int Seq,
+    DateTimeOffset TriggeredAt,
+    string? Name,
+    string? Description,
+    ImageCaptureResult? Still,
+    SceneCaptureResult? Burst)
+{
+    public bool IsBurst => Burst is not null;
+
+    public int FrameCount => Burst?.Frames.Count ?? (Still is not null ? 1 : 0);
+}

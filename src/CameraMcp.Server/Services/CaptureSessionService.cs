@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -14,8 +15,8 @@ public interface ICaptureSessionService
 
     Task<bool> StopAsync(string sessionId);
 
-    /// <summary>Long-poll for the next device-triggered frame; null if none arrives within the timeout.</summary>
-    Task<TriggeredFrame?> AwaitNextAsync(string sessionId, TimeSpan timeout, CancellationToken cancellationToken);
+    /// <summary>Long-poll for the next device-triggered capture; null if none arrives within the timeout.</summary>
+    Task<TriggeredCapture?> AwaitNextAsync(string sessionId, TimeSpan timeout, CancellationToken cancellationToken);
 
     string? CurrentSessionId { get; }
 }
@@ -65,14 +66,6 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
 
             var (listener, port) = LoopbackHttp.StartWithRetry();
             var token = Guid.NewGuid().ToString("N");
-            var captureOptions = new ImageCaptureOptions
-            {
-                DeviceId = options.DeviceId,
-                Width = options.Width,
-                Height = options.Height,
-                Format = options.Format,
-                Quality = options.Quality,
-            };
 
             var session = new Session(
                 id: "sess_" + Guid.NewGuid().ToString("N")[..8],
@@ -80,7 +73,7 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
                 port: port,
                 listener: listener,
                 deviceName: resolved.DeviceName,
-                captureOptions: captureOptions);
+                source: options);
             session.AcceptLoop = Task.Run(() => AcceptLoopAsync(session));
             _session = session;
 
@@ -133,7 +126,7 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
         }
     }
 
-    public async Task<TriggeredFrame?> AwaitNextAsync(string sessionId, TimeSpan timeout, CancellationToken cancellationToken)
+    public async Task<TriggeredCapture?> AwaitNextAsync(string sessionId, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var session = _session;
         if (session is null || !string.Equals(session.Id, sessionId, StringComparison.Ordinal))
@@ -215,17 +208,103 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
     {
         try
         {
-            var result = await _camera.CaptureImageAsync(session.CaptureOptions, session.Cts.Token).ConfigureAwait(false);
+            var request = await ReadTriggerRequestAsync(context).ConfigureAwait(false);
+            var source = session.Source;
+            var count = Math.Max(1, request.Count ?? source.BurstCount);
             var seq = Interlocked.Increment(ref session.Seq);
-            var frame = new TriggeredFrame(seq, result, DateTimeOffset.UtcNow);
-            session.Frames.Writer.TryWrite(frame);
-            WriteJson(context, 200, new { seq, width = result.Width, height = result.Height, bytes = result.Bytes.Length });
+
+            TriggeredCapture capture;
+            if (count <= 1)
+            {
+                // Single still.
+                var still = await _camera.CaptureImageAsync(new ImageCaptureOptions
+                {
+                    DeviceId = source.DeviceId,
+                    Width = source.Width,
+                    Height = source.Height,
+                    Format = source.Format,
+                    Quality = source.Quality,
+                }, session.Cts.Token).ConfigureAwait(false);
+                capture = new TriggeredCapture(seq, DateTimeOffset.UtcNow, request.Name, request.Description, still, null);
+            }
+            else
+            {
+                // Rapid-fire burst — a scene capture (bounded by the server's MaxSceneFrames).
+                var interval = request.IntervalSeconds ?? source.BurstIntervalSeconds;
+                var burst = await _camera.CaptureSceneAsync(new SceneCaptureOptions
+                {
+                    DeviceId = source.DeviceId,
+                    FrameCount = count,
+                    IntervalSeconds = interval,
+                    Width = source.Width,
+                    Height = source.Height,
+                    Format = source.Format,
+                    Quality = source.Quality,
+                }, session.Cts.Token).ConfigureAwait(false);
+                capture = new TriggeredCapture(seq, DateTimeOffset.UtcNow, request.Name, request.Description, null, burst);
+            }
+
+            session.Frames.Writer.TryWrite(capture);
+            WriteJson(context, 200, new
+            {
+                seq,
+                name = request.Name,
+                description = request.Description,
+                frameCount = capture.FrameCount,
+                kind = capture.IsBurst ? "burst" : "still",
+            });
         }
         catch (Exception ex) when (ex is CaptureValidationException or CaptureFailedException or FFmpegNotFoundException)
         {
             WriteJson(context, 500, new { error = ex.Message });
         }
     }
+
+    /// <summary>Reads optional name/description/count/interval overrides from the query string and/or a JSON body.</summary>
+    private static async Task<TriggerRequest> ReadTriggerRequestAsync(HttpListenerContext context)
+    {
+        var query = context.Request.QueryString;
+        string? name = query["name"];
+        string? description = query["description"];
+        int? count = TryInt(query["count"]);
+        double? interval = TryDouble(query["interval"]);
+
+        if (context.Request.HasEntityBody)
+        {
+            try
+            {
+                using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
+                var body = await reader.ReadToEndAsync().ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(body) && body.AsSpan().TrimStart().StartsWith("{"))
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    var root = doc.RootElement;
+                    name ??= GetJsonString(root, "name");
+                    description ??= GetJsonString(root, "description");
+                    count ??= GetJsonInt(root, "count");
+                    interval ??= GetJsonDouble(root, "interval");
+                }
+            }
+            catch (Exception) { /* ignore a malformed body — query params still apply */ }
+        }
+
+        return new TriggerRequest { Name = name, Description = description, Count = count, IntervalSeconds = interval };
+    }
+
+    private static int? TryInt(string? s) =>
+        int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : null;
+
+    private static double? TryDouble(string? s) =>
+        double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
+
+    private static string? GetJsonString(JsonElement e, string p) =>
+        e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int? GetJsonInt(JsonElement e, string p) =>
+        e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
+
+    private static double? GetJsonDouble(JsonElement e, string p) =>
+        e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? d : null;
 
     private static void WriteJson(HttpListenerContext context, int status, object body)
     {
@@ -262,16 +341,16 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
     }
 
     private sealed class Session(
-        string id, string token, int port, HttpListener listener, string deviceName, ImageCaptureOptions captureOptions)
+        string id, string token, int port, HttpListener listener, string deviceName, SessionStartOptions source)
     {
         public string Id { get; } = id;
         public string Token { get; } = token;
         public int Port { get; } = port;
         public HttpListener Listener { get; } = listener;
         public string DeviceName { get; } = deviceName;
-        public ImageCaptureOptions CaptureOptions { get; } = captureOptions;
-        public Channel<TriggeredFrame> Frames { get; } =
-            Channel.CreateBounded<TriggeredFrame>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropOldest });
+        public SessionStartOptions Source { get; } = source;
+        public Channel<TriggeredCapture> Frames { get; } =
+            Channel.CreateBounded<TriggeredCapture>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropOldest });
         public CancellationTokenSource Cts { get; } = new();
         public TunnelHandle? Tunnel { get; set; }
         public Task AcceptLoop { get; set; } = Task.CompletedTask;

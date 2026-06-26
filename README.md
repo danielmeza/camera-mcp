@@ -29,6 +29,12 @@ Because the input is just a camera, it works for **anything with a display** reg
 whether the device exposes any capture API at all. Other uses: webcam/QA automation, visual regression of a
 physical product, monitoring a 3D print or a lab readout, and general "let the agent see the real world."
 
+When the *device itself* should decide the moment to shoot — e.g. it finishes a step, hits a state, or a
+person presses a button — a **device-triggered session** (`start_capture_session`) hands the device a
+token-protected trigger URL; each trigger captures a still that the agent receives over MCP. And when you
+want to **queue** several captures or schedule a delayed one without blocking, the `queue_*` tools return a
+job id + ETA and stream the result back when it's ready.
+
 ## How it works
 
 | Concern | Library |
@@ -123,6 +129,55 @@ the local URL if none is installed. One viewer at a time; the device is held whi
 
 `start_preview` params: `deviceId?`, `width?`/`height?`, `fps` (15), `quality` (70), `tunnel` (`none`).
 
+### Queued / async captures
+Submit a capture and get a **job id + ETA** back immediately, instead of blocking the agent until the
+capture finishes. Useful to queue several captures, schedule a delayed one, or keep working while a long
+recording runs. Jobs for **different cameras run in parallel**; jobs for the **same camera serialize**.
+
+- **`queue_image`** / **`queue_scene`** / **`queue_video`** — same parameters as the matching `capture_*`
+  tool; return `{ jobId, etaSeconds, queuePosition, status }` right away.
+- **`get_capture`** — retrieve a job by `jobId`. With `waitSeconds > 0` it **long-polls**, returning the
+  result the instant the job completes (or the live status if it isn't done within the wait). When
+  complete it returns the **same content** — inline images + resource links — as the blocking tools.
+- **`list_captures`** — all jobs (queued, running, finished) with status, ETA, and queue position.
+- **`cancel_capture`** — cancel a queued or running job by `jobId`.
+
+### Device-triggered sessions (remote shutter)
+Let **something other than the agent** decide *when* to shoot. The agent starts a session; a remote or
+embedded device (or a person) triggers each capture over HTTP; the agent receives the captures in order.
+
+- **`start_capture_session`** — opens a **token-gated** loopback HTTP endpoint (optionally exposed via a
+  `cloudflare`/`devtunnel` tunnel) and returns `{ sessionId, token, triggerUrl, tunnelTriggerUrl }`.
+  Params: `deviceId?`, `width?`/`height?`, `format` (`jpeg`), `quality` (85), `burstCount` (`1`),
+  `burstIntervalSeconds` (`0.3`), `tunnel` (`none`).
+- The device **`POST`s the trigger URL** (token in `?token=` or the `X-Session-Token` header) to capture.
+  It can also **`GET /session`** (with the token) to discover the current `sessionId`.
+- **Rapid-fire bursts** — a trigger captures `burstCount` frames at `burstIntervalSeconds` apart; either
+  the session default or a **per-trigger override**. The whole burst is delivered to the agent as one
+  capture (multiple inline frames).
+- **Per-trigger metadata** — the device can attach a **`name`** and **`description`** to each trigger;
+  they're surfaced to the agent alongside the frames so it knows *what* it's looking at and *why*.
+  Overrides go on the **query string** or in a **JSON body**:
+  `POST <triggerUrl>&name=door&description=motion&count=5&interval=0.2`
+- **`await_capture`** — long-polls for the next trigger and returns the still **or** the whole burst
+  (inline images + resource links) plus its `name`/`description`/`seq`; call it in a loop to follow the
+  stream. Returns a `waiting` status if nothing triggers within `waitSeconds`.
+- **`stop_capture_session`** — tears the session (and any tunnel) down.
+
+One session is active at a time; starting another replaces it. Triggers capture through the same
+per-device lock as every other capture, so a session and a preview never open the camera at once.
+
+### On-demand public tunnels
+The agent can expose any local endpoint (a live preview, a capture session's trigger URL) **publicly** on
+its own, without restarting it with `tunnel=…`:
+
+- **`start_tunnel`** — `{ port, provider? }` → starts a Cloudflare quick tunnel (default) or a Microsoft
+  Dev Tunnel to that loopback `port` and returns `{ tunnelId, publicUrl }`. Take the `port` from the
+  local URL of the preview/session you want to share. Returns a note + null URL if the tool isn't installed.
+- **`stop_tunnel`** — `{ tunnelId }`. **`list_tunnels`** — the active tunnels and their public URLs.
+
+Requires `cloudflared` / `devtunnel` on `PATH` (see [INSTALL.md](INSTALL.md)).
+
 ## Transmitting images over MCP (no file path needed)
 
 Captures are delivered three ways, all over the MCP protocol — useful when the agent is **remote** and the
@@ -142,6 +197,13 @@ local file path is meaningless:
 See **[INSTALL.md](INSTALL.md)** for the full guide: building a **self-contained** package (the .NET
 runtime *and* ffmpeg bundled, nothing required on the target machine) and registering the server with
 Claude Code, Claude Desktop, and VS Code.
+
+## Agent skill (samples)
+
+A ready-to-use Claude skill with worked examples — stills, scenes, the async queue, **device-triggered
+sessions with rapid-fire bursts + metadata**, live preview, and on-demand tunnels — lives at
+[`.claude/skills/camera-capture/SKILL.md`](.claude/skills/camera-capture/SKILL.md). Copy that folder into
+your own `.claude/skills/` (or a plugin) to give the agent guidance and sample calls for every tool.
 
 ## Requirements
 
@@ -218,6 +280,9 @@ Override the source for a RID without a default with `-p:FFmpegDownloadUrl=<url>
   `CameraMcp__FFmpegPath`, or publish with `-p:BundleFFmpeg=true`.
 - **Logs:** all server logs go to **stderr**; stdout carries only the MCP protocol.
 
-## Scope (v1)
+## Scope
 
-stdio transport only; capture is request/response (no live streaming); audio capture is not enabled.
+stdio transport (the camera hardware is local to the host). Captures are delivered to the **model** as
+discrete frames — inline images, resource links, or MCP resources — since MCP has no live-video type;
+`start_preview` offers a live MJPEG view for a **human** only. Async captures (`queue_*`) and
+device-triggered sessions are supported. Audio capture is not enabled.
