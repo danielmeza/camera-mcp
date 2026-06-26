@@ -112,6 +112,31 @@ Deletes captured files to reclaim space and returns how much was freed. **Destru
 A path guard ensures it can only delete **within** the configured output directory — never an arbitrary
 location on the host. Returns `filesDeleted`, `directoriesDeleted`, and `bytesFreed`.
 
+### `start_preview` / `stop_preview` (live view for a human)
+Starts a **live MJPEG preview** of a camera that a **human** can watch in a browser, and returns the URL.
+The stream is loopback-only (`127.0.0.1`) and **token-gated**; set `tunnel=cloudflare|devtunnel|auto` to
+expose a public URL via an installed tunnel tool (`cloudflared` / `devtunnel`), with graceful fallback to
+the local URL if none is installed. One viewer at a time; the device is held while watching.
+
+> An **LLM agent cannot consume a live video stream** — MCP has no video type. For the *model*, use
+> `capture_image` / `capture_scene` (discrete frames). `start_preview` is for a person to watch.
+
+`start_preview` params: `deviceId?`, `width?`/`height?`, `fps` (15), `quality` (70), `tunnel` (`none`).
+
+## Transmitting images over MCP (no file path needed)
+
+Captures are delivered three ways, all over the MCP protocol — useful when the agent is **remote** and the
+local file path is meaningless:
+
+- **Inline** — `capture_image`/`capture_scene` embed the bytes as an `image` content block (the model sees
+  them directly). The universal, most-portable delivery.
+- **Resource link** — capture results also include a `resource_link` to a `camera://captures/<path>` URI
+  (and the metadata carries `resourceUri`).
+- **Resources** — read any saved capture by URI via `resources/read`:
+  - `camera://captures/{path}` — a previously saved image, scene frame, or video (path-guarded to the
+    output dir).
+  - `camera://device/{deviceId}/frame` — captures and returns a **fresh** JPEG from the named camera.
+
 ## Install
 
 See **[INSTALL.md](INSTALL.md)** for the full guide: building a **self-contained** package (the .NET

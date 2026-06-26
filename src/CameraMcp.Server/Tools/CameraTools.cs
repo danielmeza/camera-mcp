@@ -16,10 +16,12 @@ namespace CameraMcp.Server.Tools;
 public sealed class CameraTools
 {
     private readonly ICameraService _camera;
+    private readonly ICaptureStore _store;
 
-    public CameraTools(ICameraService camera)
+    public CameraTools(ICameraService camera, ICaptureStore store)
     {
         _camera = camera;
+        _store = store;
     }
 
     [McpServerTool(Name = "list_cameras"),
@@ -69,6 +71,7 @@ public sealed class CameraTools
             };
 
             var result = await _camera.CaptureImageAsync(options, cancellationToken).ConfigureAwait(false);
+            var resourceUri = _store.ToResourceUri(result.FilePath);
 
             var metadata = CameraJson.Serialize(new
             {
@@ -78,13 +81,16 @@ public sealed class CameraTools
                 height = result.Height,
                 bytes = result.Bytes.Length,
                 path = result.FilePath,
+                resourceUri,
             });
 
-            return
-            [
+            var blocks = new List<ContentBlock>
+            {
                 new TextContentBlock { Text = metadata },
                 ImageContentBlock.FromBytes(result.Bytes, result.MimeType),
-            ];
+            };
+            AddResourceLink(blocks, resourceUri, result.MimeType, result.Bytes.Length);
+            return blocks;
         }
         catch (Exception ex) when (IsDomainError(ex))
         {
@@ -139,10 +145,12 @@ public sealed class CameraTools
             };
 
             var result = await _camera.CaptureVideoAsync(options, cancellationToken).ConfigureAwait(false);
+            var resourceUri = _store.ToResourceUri(result.FilePath);
 
             var metadata = CameraJson.Serialize(new
             {
                 path = result.FilePath,
+                resourceUri,
                 device = result.DeviceName,
                 container = result.Container.Name,
                 codec = result.Codec.Name,
@@ -160,6 +168,7 @@ public sealed class CameraTools
                 blocks.Add(ImageContentBlock.FromBytes(poster, VideoCaptureResult.PosterMimeType));
             }
 
+            AddResourceLink(blocks, resourceUri, $"video/{result.Container.Name}", result.FileSizeBytes);
             return blocks;
         }
         catch (Exception ex) when (IsDomainError(ex))
@@ -227,7 +236,14 @@ public sealed class CameraTools
                 width = result.Width,
                 height = result.Height,
                 outputDirectory = result.OutputDirectory,
-                frames = result.Frames.Select(f => new { index = f.Index, path = f.FilePath, bytes = f.SizeBytes, inline = f.Bytes is not null }),
+                frames = result.Frames.Select(f => new
+                {
+                    index = f.Index,
+                    path = f.FilePath,
+                    resourceUri = _store.ToResourceUri(f.FilePath),
+                    bytes = f.SizeBytes,
+                    inline = f.Bytes is not null,
+                }),
             });
 
             // All frames are on disk (paths above); a bounded prefix is also returned inline so the
@@ -246,6 +262,16 @@ public sealed class CameraTools
         catch (Exception ex) when (IsDomainError(ex))
         {
             throw new McpException(ex.Message);
+        }
+    }
+
+    /// <summary>Adds a resource_link content block so clients can fetch the file's bytes over MCP by URI.</summary>
+    private static void AddResourceLink(List<ContentBlock> blocks, string? uri, string mimeType, long size)
+    {
+        if (!string.IsNullOrEmpty(uri))
+        {
+            var name = uri[(uri.LastIndexOf('/') + 1)..];
+            blocks.Add(new ResourceLinkBlock { Uri = uri, Name = name, MimeType = mimeType, Size = size });
         }
     }
 

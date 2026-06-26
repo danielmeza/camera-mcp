@@ -57,5 +57,10 @@ public class CaptureStoreToolsTests
 
             return Result ?? throw new InvalidOperationException("no stub result configured");
         }
+
+        public string? ToResourceUri(string absolutePath) => null;
+
+        public Task<CaptureContent> ReadCaptureAsync(string relativePath, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

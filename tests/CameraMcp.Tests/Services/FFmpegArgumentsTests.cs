@@ -151,6 +151,18 @@ public class FFmpegArgumentsTests
     }
 
     [Fact]
+    public void MjpegStream_produces_a_continuous_multipart_stream_to_pipe()
+    {
+        var args = FFmpegArguments.BuildMjpegStreamArgs(DeviceInput, 70);
+
+        Assert.Equal(DeviceInput, args.Skip(args.ToList().IndexOf("-f")).Take(4));
+        AssertAdjacent(args, "-q:v", ImageFormat.MapJpegQscale(70).ToString());
+        AssertAdjacent(args, "-f", "mpjpeg");
+        Assert.Equal("pipe:1", args[^1]);
+        Assert.DoesNotContain("-frames:v", args); // continuous, not a single frame
+    }
+
+    [Fact]
     public void PosterFrame_extracts_single_jpeg_to_pipe()
     {
         var args = FFmpegArguments.BuildPosterFrameArgs("clip.mp4");

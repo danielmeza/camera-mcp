@@ -96,6 +96,86 @@ public class CaptureStoreTests
         Assert.Equal(0, result.BytesFreed);
     }
 
+    [Theory]
+    [InlineData("a/image-1.jpg", "image/jpeg")]
+    [InlineData("a/b/frame-001.png", "image/png")]
+    [InlineData("x.webp", "image/webp")]
+    [InlineData("clip.mp4", "video/mp4")]
+    [InlineData("clip.webm", "video/webm")]
+    [InlineData("clip.mkv", "video/x-matroska")]
+    [InlineData("notes.txt", "application/octet-stream")]
+    public void MimeForExtension_maps_known_types(string path, string expected)
+    {
+        Assert.Equal(expected, CaptureStore.MimeForExtension(path));
+    }
+
+    [Fact]
+    public void ToResourceUri_maps_paths_inside_the_output_dir()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var uri = Store(dir).ToResourceUri(Path.Combine(dir, "scene-1", "frame-002.jpg"));
+            Assert.Equal("camera://captures/scene-1/frame-002.jpg", uri); // forward slashes regardless of OS
+        }
+        finally
+        {
+            Cleanup(dir);
+        }
+    }
+
+    [Fact]
+    public void ToResourceUri_returns_null_for_paths_outside_the_output_dir()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            Assert.Null(Store(dir).ToResourceUri(Path.Combine(Path.GetTempPath(), "elsewhere", "x.jpg")));
+        }
+        finally
+        {
+            Cleanup(dir);
+        }
+    }
+
+    [Fact]
+    public async Task ReadCaptureAsync_reads_a_stored_file_with_its_mime()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var bytes = new byte[] { 1, 2, 3, 4, 5 };
+            Directory.CreateDirectory(Path.Combine(dir, "scene-1"));
+            await File.WriteAllBytesAsync(Path.Combine(dir, "scene-1", "frame-001.jpg"), bytes);
+
+            var content = await Store(dir).ReadCaptureAsync("scene-1/frame-001.jpg", CancellationToken.None);
+
+            Assert.Equal(bytes, content.Bytes);
+            Assert.Equal("image/jpeg", content.Mime);
+        }
+        finally
+        {
+            Cleanup(dir);
+        }
+    }
+
+    [Fact]
+    public async Task ReadCaptureAsync_rejects_escaping_and_missing_paths()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            await Assert.ThrowsAsync<CaptureValidationException>(() =>
+                Store(dir).ReadCaptureAsync("../escape.jpg", CancellationToken.None));
+            await Assert.ThrowsAsync<CaptureValidationException>(() =>
+                Store(dir).ReadCaptureAsync("does-not-exist.jpg", CancellationToken.None));
+        }
+        finally
+        {
+            Cleanup(dir);
+        }
+    }
+
     private static CaptureStore Store(string outputDirectory) =>
         new(Options.Create(new CameraMcpOptions { OutputDirectory = outputDirectory }));
 

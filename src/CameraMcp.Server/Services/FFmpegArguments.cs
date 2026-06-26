@@ -225,6 +225,26 @@ public static class FFmpegArguments
     }
 
     /// <summary>
+    /// Builds a continuous MJPEG (<c>multipart/x-mixed-replace</c>, boundary <c>ffmpeg</c>) stream from a
+    /// device to stdout (<c>pipe:1</c>) — relayed to a browser for a live preview.
+    /// </summary>
+    public static IReadOnlyList<string> BuildMjpegStreamArgs(IReadOnlyList<string> inputArgs, int quality)
+    {
+        ArgumentNullException.ThrowIfNull(inputArgs);
+        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin" };
+        args.AddRange(inputArgs);
+        args.Add("-q:v");
+        args.Add(ImageFormat.MapJpegQscale(quality).ToString(CultureInfo.InvariantCulture));
+        args.Add("-f");
+        args.Add("mpjpeg");
+        args.Add("pipe:1");
+        return args;
+    }
+
+    /// <summary>The MIME boundary FFmpeg's mpjpeg muxer uses for the multipart stream.</summary>
+    public const string MjpegBoundary = "ffmpeg";
+
+    /// <summary>
     /// Extracts the first frame of an encoded video file as a JPEG on stdout (<c>pipe:1</c>),
     /// used to produce the inline poster frame returned alongside a recording.
     /// </summary>

@@ -169,6 +169,38 @@ public sealed class CameraService : ICameraService, IDisposable
     private static Task DelayStartAsync(double seconds, CancellationToken cancellationToken) =>
         seconds > 0 ? Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken) : Task.CompletedTask;
 
+    public async Task<ResolvedCaptureInput> ResolveInputAsync(
+        string? deviceId, int? width, int? height, int fps, CancellationToken cancellationToken)
+    {
+        var devices = await EnumerateAsync(cancellationToken).ConfigureAwait(false);
+        var device = ResolveDevice(devices, deviceId);
+        var index = FormatSelector.SelectIndex(device.SelectionFormats, width, height, fps > 0 ? fps : null);
+        var characteristics = device.Characteristics[index];
+        var effectiveFps = fps > 0 ? fps : FrameRate(characteristics);
+
+        var inputArgs = PlatformDeviceMapper.BuildVideoInput(
+            device.Platform, device.VideoTarget, characteristics.Width, characteristics.Height, effectiveFps);
+
+        return new ResolvedCaptureInput(device.Name, device.LockKey, inputArgs, characteristics.Width, characteristics.Height);
+    }
+
+    public async Task<IAsyncDisposable> AcquireDeviceLockAsync(string lockKey, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(lockKey);
+        var gate = _deviceLocks.GetOrAdd(lockKey, _ => new Lazy<SemaphoreSlim>(() => new SemaphoreSlim(1, 1))).Value;
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return new DeviceLockReleaser(gate);
+    }
+
+    private sealed class DeviceLockReleaser(SemaphoreSlim gate) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            gate.Release();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     /// <summary>Warmup window in seconds: the still warmup-frame count converted via the device frame rate.</summary>
     private double WarmupSeconds(int frameRate)
     {

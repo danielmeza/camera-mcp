@@ -21,10 +21,13 @@ builder.Services.AddSingleton<IVideoRecorder, FFmpegVideoRecorder>();
 builder.Services.AddSingleton<ISceneCapturer, FFmpegSceneCapturer>();
 builder.Services.AddSingleton<ICaptureStore, CaptureStore>();
 builder.Services.AddSingleton<ICameraService, CameraService>();
+builder.Services.AddSingleton<ITunnelLauncher, TunnelLauncher>();
+builder.Services.AddSingleton<IPreviewService, PreviewService>();
 
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
-    .WithToolsFromAssembly();
+    .WithToolsFromAssembly()
+    .WithResourcesFromAssembly();
 
 await builder.Build().RunAsync();
