@@ -16,25 +16,27 @@ namespace CameraMcp.Server.Tools;
 public sealed class TunnelTools
 {
     private readonly ITunnelManager _tunnels;
+    private readonly IHttpHostInfo _host;
 
-    public TunnelTools(ITunnelManager tunnels)
+    public TunnelTools(ITunnelManager tunnels, IHttpHostInfo host)
     {
         _tunnels = tunnels;
+        _host = host;
     }
 
     [McpServerTool(Name = "start_tunnel"),
-     Description("Starts a public tunnel to a loopback PORT on this host and returns its public URL. " +
-                 "Use it to expose a live preview or a capture session that was started without a tunnel: " +
-                 "pass the port from that endpoint's local URL. provider: 'cloudflare' (default) or 'devtunnel'. " +
-                 "If the tool isn't installed, returns a note and a null publicUrl.")]
+     Description("Starts a public tunnel to the built-in web host (which serves the live preview and " +
+                 "capture-session trigger endpoints) and returns its public URL. Omit port to expose this " +
+                 "host's own port; pass a port only to expose a different local server. provider: " +
+                 "'cloudflare' (default) or 'devtunnel'. If the tool isn't installed, returns a note and a null publicUrl.")]
     public async Task<string> StartTunnelAsync(
-        [Description("The loopback port to expose (1-65535), e.g. the port in a preview/session URL.")] int port,
+        [Description("Loopback port to expose (1-65535). Omit to expose this server's own web host port.")] int? port = null,
         [Description("'cloudflare' (default) or 'devtunnel'.")] string? provider = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var entry = await _tunnels.StartAsync(port, ParseProvider(provider), cancellationToken).ConfigureAwait(false);
+            var entry = await _tunnels.StartAsync(port ?? _host.Port, ParseProvider(provider), cancellationToken).ConfigureAwait(false);
             return CameraJson.Serialize(new
             {
                 tunnelId = entry.TunnelId,

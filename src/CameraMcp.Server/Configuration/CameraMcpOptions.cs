@@ -64,6 +64,9 @@ public sealed class CameraMcpOptions
     /// </summary>
     public string? PublicBaseUrl { get; set; }
 
+    /// <summary>Serve the stdio MCP transport (for local agents). Default true; set false for a pure-HTTP host.</summary>
+    public bool StdioTransport { get; set; } = true;
+
     /// <summary>Expose the MCP server itself over Streamable HTTP (for remote agents) at <see cref="HttpMcpPath"/>.</summary>
     public bool EnableHttpMcp { get; set; }
 

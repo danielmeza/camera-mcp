@@ -3,6 +3,7 @@ using CameraMcp.Server.Configuration;
 using CameraMcp.Server.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -39,15 +40,55 @@ builder.Services.AddSingleton<ICaptureQueue, CaptureQueue>();
 builder.Services.AddSingleton<ICaptureSessionService, CaptureSessionService>();
 builder.Services.AddSingleton<IHttpHostInfo, HttpHostInfo>();
 
-builder.Services
+// Local agents connect over stdio (default). When CameraMcp__EnableHttpMcp=true the same tools are also
+// exposed over Streamable HTTP for remote agents. A pure-HTTP deployment can set
+// CameraMcp__StdioTransport=false so the process doesn't shut down on stdin EOF.
+var enableHttpMcp = builder.Configuration.GetValue($"{CameraMcpOptions.SectionName}:EnableHttpMcp", false);
+var enableStdio = builder.Configuration.GetValue($"{CameraMcpOptions.SectionName}:StdioTransport", true);
+var mcp = builder.Services
     .AddMcpServer()
-    .WithStdioServerTransport()
     .WithToolsFromAssembly()
     .WithResourcesFromAssembly();
+if (enableStdio)
+{
+    mcp.WithStdioServerTransport();
+}
+
+if (enableHttpMcp)
+{
+    mcp.WithHttpTransport();
+    builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+}
 
 var app = builder.Build();
 
 app.MapDeviceEndpoints();
+
+if (enableHttpMcp)
+{
+    var options = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraMcpOptions>>().Value;
+    app.UseCors();
+
+    // Optional static bearer gate on the MCP endpoint — strongly recommended beyond loopback.
+    if (!string.IsNullOrEmpty(options.HttpMcpBearerToken))
+    {
+        var expected = $"Bearer {options.HttpMcpBearerToken}";
+        var mcpPath = options.HttpMcpPath;
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Path.StartsWithSegments(mcpPath)
+                && !string.Equals(context.Request.Headers.Authorization, expected, StringComparison.Ordinal))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            await next(context);
+        });
+    }
+
+    app.MapMcp(options.HttpMcpPath);
+}
 
 await app.RunAsync();
 
