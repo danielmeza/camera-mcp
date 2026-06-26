@@ -1,51 +1,59 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
-using System.Text;
 using CameraMcp.Server.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace CameraMcp.Server.Services;
 
-/// <summary>Runs a single live MJPEG preview (loopback HTTP, optional public tunnel).</summary>
+/// <summary>Runs live MJPEG previews served by the shared web host.</summary>
 public interface IPreviewService
 {
     Task<PreviewInfo> StartAsync(PreviewOptions options, CancellationToken cancellationToken);
 
-    Task<bool> StopAsync();
+    Task<bool> StopAsync(string previewId);
 
-    bool IsRunning { get; }
+    /// <summary>Serves the viewer HTML page for a preview (called by the web route).</summary>
+    Task ServePageAsync(string previewId, string? token, HttpResponse response);
+
+    /// <summary>Relays the live MJPEG stream to <paramref name="response"/> until the client disconnects.</summary>
+    Task ServeStreamAsync(string previewId, string? token, HttpResponse response, CancellationToken cancellationToken);
+
+    IReadOnlyList<string> ActivePreviewIds { get; }
 }
 
 /// <summary>
-/// Serves a live preview: a loopback <see cref="HttpListener"/> relays a continuous ffmpeg MJPEG stream
-/// to a browser (one viewer at a time; the device is only opened while someone is watching), optionally
-/// fronted by a Cloudflare/Dev tunnel. Access is gated by a per-session token.
+/// Serves live previews over the shared Kestrel host: <c>GET /preview/{id}</c> is a viewer page and
+/// <c>GET /preview/{id}/stream</c> relays a continuous ffmpeg MJPEG stream (one viewer at a time; the
+/// camera is only opened while someone is watching, under the shared per-device lock). Access is gated
+/// by a per-preview token; a Cloudflare/Dev tunnel can expose it publicly.
 /// </summary>
 public sealed class PreviewService : IPreviewService, IDisposable
 {
-    private const string Loopback = "127.0.0.1";
-
     private readonly ICameraService _camera;
     private readonly IFFmpegLocator _locator;
     private readonly ITunnelLauncher _tunnel;
+    private readonly IHttpHostInfo _host;
     private readonly ILogger<PreviewService> _logger;
 
-    private readonly SemaphoreSlim _gate = new(1, 1);
-    private Session? _session;
+    private readonly ConcurrentDictionary<string, PreviewState> _previews = new(StringComparer.Ordinal);
 
     public PreviewService(
         ICameraService camera,
         IFFmpegLocator locator,
         ITunnelLauncher tunnel,
+        IHttpHostInfo host,
         ILogger<PreviewService> logger)
     {
         _camera = camera;
         _locator = locator;
         _tunnel = tunnel;
+        _host = host;
         _logger = logger;
     }
 
-    public bool IsRunning => _session is not null;
+    public IReadOnlyList<string> ActivePreviewIds => _previews.Keys.ToList();
 
     public async Task<PreviewInfo> StartAsync(PreviewOptions options, CancellationToken cancellationToken)
     {
@@ -53,193 +61,126 @@ public sealed class PreviewService : IPreviewService, IDisposable
         CaptureOptionsValidation.ValidateQuality(options.Quality);
         CaptureOptionsValidation.ValidateFps(options.Fps);
 
-        // Resolve the device input and confirm ffmpeg up front (clear errors before we open a socket).
+        // Resolve the device input and confirm ffmpeg up front (clear errors before registering).
         var resolved = await _camera.ResolveInputAsync(options.DeviceId, options.Width, options.Height, options.Fps, cancellationToken)
             .ConfigureAwait(false);
         _ = _locator.Resolve();
 
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        var id = "prev_" + Guid.NewGuid().ToString("N")[..8];
+        var token = Guid.NewGuid().ToString("N");
+        var state = new PreviewState(id, token, resolved.LockKey, resolved.FfmpegInputArgs, options.Quality, resolved.DeviceName);
+
+        TunnelProvider effectiveTunnel = TunnelProvider.None;
+        string? tunnelUrl = null;
+        string? tunnelNote = null;
+        if (options.Tunnel != TunnelProvider.None)
         {
-            if (_session is not null)
-            {
-                await StopInternalAsync(_session).ConfigureAwait(false);
-                _session = null;
-            }
-
-            var token = Guid.NewGuid().ToString("N");
-            var (listener, port) = LoopbackHttp.StartWithRetry();
-
-            var session = new Session(
-                listener, token, port, resolved.LockKey, resolved.FfmpegInputArgs, options.Quality, resolved.DeviceName);
-            session.AcceptLoop = Task.Run(() => AcceptLoopAsync(session));
-            _session = session;
-
-            try
-            {
-                TunnelProvider effectiveTunnel = TunnelProvider.None;
-                string? tunnelUrl = null;
-                string? tunnelNote = null;
-                if (options.Tunnel != TunnelProvider.None)
-                {
-                    var (handle, effective, note) = await _tunnel.StartAsync(port, options.Tunnel, cancellationToken).ConfigureAwait(false);
-                    session.Tunnel = handle;
-                    effectiveTunnel = effective;
-                    tunnelNote = note;
-                    tunnelUrl = handle is null ? null : $"{handle.PublicUrl}/?token={token}";
-                }
-
-                _logger.LogInformation("Live preview started for {Device} on {Url}.", resolved.DeviceName, $"http://{Loopback}:{port}/");
-
-                return new PreviewInfo(
-                    resolved.DeviceName,
-                    LocalUrl: $"http://{Loopback}:{port}/?token={token}",
-                    StreamUrl: $"http://{Loopback}:{port}/stream?token={token}",
-                    TunnelUrl: tunnelUrl,
-                    Tunnel: effectiveTunnel,
-                    TunnelNote: tunnelNote);
-            }
-            catch
-            {
-                // Tear down the half-started preview so its listener/loop don't leak.
-                await StopInternalAsync(session).ConfigureAwait(false);
-                _session = null;
-                throw;
-            }
+            var (handle, effective, note) = await _tunnel.StartAsync(_host.Port, options.Tunnel, cancellationToken).ConfigureAwait(false);
+            state.Tunnel = handle;
+            effectiveTunnel = effective;
+            tunnelNote = note;
+            tunnelUrl = handle is null ? null : $"{handle.PublicUrl}/preview/{id}?token={token}";
         }
-        finally
-        {
-            _gate.Release();
-        }
+
+        _previews[id] = state;
+        _logger.LogInformation("Live preview {Id} started for {Device}.", id, resolved.DeviceName);
+
+        return new PreviewInfo(
+            id,
+            resolved.DeviceName,
+            LocalUrl: $"{_host.BaseUrl}/preview/{id}?token={token}",
+            StreamUrl: $"{_host.BaseUrl}/preview/{id}/stream?token={token}",
+            TunnelUrl: tunnelUrl,
+            Tunnel: effectiveTunnel,
+            TunnelNote: tunnelNote);
     }
 
-    public async Task<bool> StopAsync()
+    public Task<bool> StopAsync(string previewId)
     {
-        await _gate.WaitAsync().ConfigureAwait(false);
-        try
+        if (!_previews.TryRemove(previewId, out var state))
         {
-            if (_session is null)
-            {
-                return false;
-            }
+            return Task.FromResult(false);
+        }
 
-            await StopInternalAsync(_session).ConfigureAwait(false);
-            _session = null;
-            return true;
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        state.Cts.Cancel();          // ends an active stream → releases the viewer + device lock + kills ffmpeg
+        state.Tunnel?.Dispose();
+        _logger.LogInformation("Live preview {Id} stopped.", previewId);
+        return Task.FromResult(true);
     }
 
-    private async Task AcceptLoopAsync(Session session)
+    public async Task ServePageAsync(string previewId, string? token, HttpResponse response)
     {
-        while (session.Listener.IsListening)
+        if (!_previews.TryGetValue(previewId, out var state))
         {
-            HttpListenerContext context;
-            try
-            {
-                context = await session.Listener.GetContextAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException or InvalidOperationException)
-            {
-                break; // listener stopped
-            }
-
-            _ = Task.Run(() => HandleRequestAsync(session, context));
+            response.StatusCode = 404;
+            return;
         }
-    }
 
-    private async Task HandleRequestAsync(Session session, HttpListenerContext context)
-    {
-        try
+        if (!TokenMatches(state, token))
         {
-            var path = context.Request.Url?.AbsolutePath ?? "/";
-            var token = context.Request.QueryString["token"];
-
-            if (!string.Equals(token, session.Token, StringComparison.Ordinal))
-            {
-                context.Response.StatusCode = 403;
-                context.Response.Close();
-                return;
-            }
-
-            if (path == "/")
-            {
-                ServeIndex(session, context);
-            }
-            else if (path == "/stream")
-            {
-                await ServeStreamAsync(session, context).ConfigureAwait(false);
-            }
-            else
-            {
-                context.Response.StatusCode = 404;
-                context.Response.Close();
-            }
+            response.StatusCode = 401;
+            return;
         }
-        catch (Exception ex)
-        {
-            _logger.LogDebugSafe(ex);
-            try { context.Response.Abort(); } catch (Exception) { /* ignore */ }
-        }
-    }
 
-    private void ServeIndex(Session session, HttpListenerContext context)
-    {
         var html =
-            $"<!doctype html><html><head><meta charset=utf-8><title>camera-mcp · {WebUtility.HtmlEncode(session.DeviceName)}</title></head>" +
+            $"<!doctype html><html><head><meta charset=utf-8><title>camera-mcp · {WebUtility.HtmlEncode(state.DeviceName)}</title></head>" +
             "<body style=\"margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh\">" +
-            $"<img src=\"/stream?token={session.Token}\" style=\"max-width:100%;max-height:100%\" alt=\"live preview\"></body></html>";
-        var bytes = Encoding.UTF8.GetBytes(html);
-        context.Response.ContentType = "text/html; charset=utf-8";
-        context.Response.Headers["Referrer-Policy"] = "no-referrer"; // don't leak the token via Referer
-        context.Response.ContentLength64 = bytes.Length;
-        context.Response.OutputStream.Write(bytes, 0, bytes.Length);
-        context.Response.Close();
+            $"<img src=\"/preview/{previewId}/stream?token={state.Token}\" style=\"max-width:100%;max-height:100%\" alt=\"live preview\"></body></html>";
+        response.ContentType = "text/html; charset=utf-8";
+        response.Headers["Referrer-Policy"] = "no-referrer"; // don't leak the token via Referer
+        await response.WriteAsync(html).ConfigureAwait(false);
     }
 
-    private async Task ServeStreamAsync(Session session, HttpListenerContext context)
+    public async Task ServeStreamAsync(string previewId, string? token, HttpResponse response, CancellationToken cancellationToken)
     {
-        if (!session.Viewer.Wait(0))
+        if (!_previews.TryGetValue(previewId, out var state))
         {
-            context.Response.StatusCode = 503;
-            var msg = Encoding.UTF8.GetBytes("Preview is busy: one viewer at a time.");
-            context.Response.OutputStream.Write(msg, 0, msg.Length);
-            context.Response.Close();
+            response.StatusCode = 404;
+            return;
+        }
+
+        if (!TokenMatches(state, token))
+        {
+            response.StatusCode = 401;
+            return;
+        }
+
+        if (!state.Viewer.Wait(0))
+        {
+            response.StatusCode = 503;
+            await response.WriteAsync("Preview is busy: one viewer at a time.").ConfigureAwait(false);
             return;
         }
 
         Process? ffmpeg = null;
         IAsyncDisposable? deviceLock = null;
-        var token = session.Cts.Token;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, state.Cts.Token);
+        var token2 = linked.Token;
         try
         {
             // Share the device serialization lock with captures so the camera isn't opened twice.
-            deviceLock = await _camera.AcquireDeviceLockAsync(session.LockKey, token).ConfigureAwait(false);
+            deviceLock = await _camera.AcquireDeviceLockAsync(state.LockKey, token2).ConfigureAwait(false);
 
-            ffmpeg = StartStreamProcess(session);
+            ffmpeg = StartStreamProcess(state);
             DrainStderr(ffmpeg);
 
-            context.Response.SendChunked = true;
-            context.Response.ContentType = $"multipart/x-mixed-replace; boundary={FFmpegArguments.MjpegBoundary}";
-            context.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-            context.Response.Headers["Referrer-Policy"] = "no-referrer"; // don't leak the token via Referer
+            response.ContentType = $"multipart/x-mixed-replace; boundary={FFmpegArguments.MjpegBoundary}";
+            response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+            response.Headers["Referrer-Policy"] = "no-referrer";
 
             var buffer = new byte[64 * 1024];
             var source = ffmpeg.StandardOutput.BaseStream;
             int read;
-            while ((read = await source.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
+            while ((read = await source.ReadAsync(buffer, token2).ConfigureAwait(false)) > 0)
             {
-                await context.Response.OutputStream.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
-                await context.Response.OutputStream.FlushAsync(token).ConfigureAwait(false);
+                await response.Body.WriteAsync(buffer.AsMemory(0, read), token2).ConfigureAwait(false);
+                await response.Body.FlushAsync(token2).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
         {
             // Client disconnect, stop, or ffmpeg end — normal for a live stream.
-            _logger.LogDebugSafe(ex);
+            _logger.LogDebug(ex, "Preview stream ended.");
         }
         finally
         {
@@ -249,14 +190,16 @@ public sealed class PreviewService : IPreviewService, IDisposable
                 await deviceLock.DisposeAsync().ConfigureAwait(false);
             }
 
-            try { context.Response.Close(); } catch (Exception) { /* already closed */ }
-            try { session.Viewer.Release(); } catch (ObjectDisposedException) { /* stopped */ } catch (SemaphoreFullException) { /* drained */ }
+            try { state.Viewer.Release(); } catch (ObjectDisposedException) { /* stopped */ } catch (SemaphoreFullException) { /* drained */ }
         }
     }
 
-    private Process StartStreamProcess(Session session)
+    private static bool TokenMatches(PreviewState state, string? token) =>
+        !string.IsNullOrEmpty(token) && string.Equals(token, state.Token, StringComparison.Ordinal);
+
+    private Process StartStreamProcess(PreviewState state)
     {
-        var args = FFmpegArguments.BuildMjpegStreamArgs(session.InputArgs, session.Quality);
+        var args = FFmpegArguments.BuildMjpegStreamArgs(state.InputArgs, state.Quality);
         var startInfo = new ProcessStartInfo
         {
             FileName = _locator.Resolve(),
@@ -303,40 +246,23 @@ public sealed class PreviewService : IPreviewService, IDisposable
         }
     }
 
-    private async Task StopInternalAsync(Session session)
-    {
-        session.Cts.Cancel(); // end any in-flight stream (its read + device-lock wait) so it releases
-        session.Tunnel?.Dispose();
-        try { session.Listener.Stop(); } catch (Exception) { /* ignore */ }
-        try { session.Listener.Close(); } catch (Exception) { /* ignore */ }
-
-        try
-        {
-            await session.AcceptLoop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        }
-        catch (Exception) { /* best effort */ }
-
-        // Drain: wait for an active stream to release the viewer slot before disposing the semaphore.
-        try { session.Viewer.Wait(TimeSpan.FromSeconds(2)); } catch (Exception) { /* best effort */ }
-
-        session.Viewer.Dispose();
-        session.Cts.Dispose();
-        _logger.LogInformation("Live preview stopped for {Device}.", session.DeviceName);
-    }
-
     public void Dispose()
     {
-        try { StopAsync().GetAwaiter().GetResult(); } catch (Exception) { /* ignore */ }
-        _gate.Dispose();
+        foreach (var id in _previews.Keys.ToList())
+        {
+            if (_previews.TryRemove(id, out var state))
+            {
+                state.Cts.Cancel();
+                state.Tunnel?.Dispose();
+            }
+        }
     }
 
-    private sealed class Session(
-        HttpListener listener, string token, int port, string lockKey,
-        IReadOnlyList<string> inputArgs, int quality, string deviceName)
+    private sealed class PreviewState(
+        string id, string token, string lockKey, IReadOnlyList<string> inputArgs, int quality, string deviceName)
     {
-        public HttpListener Listener { get; } = listener;
+        public string Id { get; } = id;
         public string Token { get; } = token;
-        public int Port { get; } = port;
         public string LockKey { get; } = lockKey;
         public IReadOnlyList<string> InputArgs { get; } = inputArgs;
         public int Quality { get; } = quality;
@@ -344,12 +270,5 @@ public sealed class PreviewService : IPreviewService, IDisposable
         public SemaphoreSlim Viewer { get; } = new(1, 1);
         public CancellationTokenSource Cts { get; } = new();
         public TunnelHandle? Tunnel { get; set; }
-        public Task AcceptLoop { get; set; } = Task.CompletedTask;
     }
-}
-
-internal static class PreviewLogExtensions
-{
-    public static void LogDebugSafe(this ILogger logger, Exception ex) =>
-        logger.LogDebug(ex, "Preview request ended.");
 }

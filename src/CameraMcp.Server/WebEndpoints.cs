@@ -4,6 +4,7 @@ using CameraMcp.Server.Models;
 using CameraMcp.Server.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 
 namespace CameraMcp.Server;
 
@@ -14,7 +15,7 @@ internal static class WebEndpoints
     {
         // A device triggers a capture (still or rapid-fire burst). Token in ?token= or X-Session-Token.
         app.MapPost("/sessions/{sessionId}/trigger",
-            async (string sessionId, HttpRequest http, ICaptureSessionService sessions, CancellationToken ct) =>
+            async (string sessionId, HttpRequest http, [FromServices] ICaptureSessionService sessions, CancellationToken ct) =>
             {
                 var token = ExtractToken(http);
                 var request = await ReadTriggerRequestAsync(http, ct).ConfigureAwait(false);
@@ -37,7 +38,7 @@ internal static class WebEndpoints
 
         // A device discovers / health-checks its session.
         app.MapGet("/sessions/{sessionId}",
-            (string sessionId, HttpRequest http, ICaptureSessionService sessions) =>
+            (string sessionId, HttpRequest http, [FromServices] ICaptureSessionService sessions) =>
             {
                 var descriptor = sessions.Describe(sessionId, ExtractToken(http));
                 return descriptor.Outcome switch
@@ -47,6 +48,15 @@ internal static class WebEndpoints
                     _ => Results.Json(new { error = "no such session" }, statusCode: 404),
                 };
             });
+
+        // Live preview: a viewer page and the MJPEG stream behind it (for a human in a browser).
+        app.MapGet("/preview/{previewId}",
+            (string previewId, HttpRequest http, HttpResponse response, [FromServices] IPreviewService preview) =>
+                preview.ServePageAsync(previewId, ExtractToken(http), response));
+
+        app.MapGet("/preview/{previewId}/stream",
+            (string previewId, HttpRequest http, HttpResponse response, [FromServices] IPreviewService preview, CancellationToken ct) =>
+                preview.ServeStreamAsync(previewId, ExtractToken(http), response, ct));
     }
 
     private static string? ExtractToken(HttpRequest http) =>

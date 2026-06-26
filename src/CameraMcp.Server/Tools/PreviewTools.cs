@@ -56,6 +56,7 @@ public sealed class PreviewTools
 
             return CameraJson.Serialize(new
             {
+                previewId = info.PreviewId,
                 device = info.DeviceName,
                 localUrl = info.LocalUrl,
                 streamUrl = info.StreamUrl,
@@ -71,10 +72,11 @@ public sealed class PreviewTools
     }
 
     [McpServerTool(Name = "stop_preview"),
-     Description("Stops the live preview (closes the HTTP server and any tunnel, releases the camera).")]
-    public async Task<string> StopPreviewAsync()
+     Description("Stops a live preview (releases the camera and any tunnel) by its previewId.")]
+    public async Task<string> StopPreviewAsync(
+        [Description("The previewId returned by start_preview.")] string previewId)
     {
-        var stopped = await _preview.StopAsync().ConfigureAwait(false);
-        return CameraJson.Serialize(new { stopped });
+        var stopped = await _preview.StopAsync(previewId).ConfigureAwait(false);
+        return CameraJson.Serialize(new { previewId, stopped });
     }
 }

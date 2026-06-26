@@ -38,13 +38,15 @@ public sealed class PreviewOptions
 }
 
 /// <summary>Details of a running preview.</summary>
+/// <param name="PreviewId">Stable id; used to stop the preview and embedded in its URLs.</param>
 /// <param name="DeviceName">Camera being previewed.</param>
-/// <param name="LocalUrl">Loopback page URL (open in a browser on this host) — includes the access token.</param>
+/// <param name="LocalUrl">Page URL (open in a browser) — includes the access token.</param>
 /// <param name="StreamUrl">Direct MJPEG stream URL (for an &lt;img&gt; tag).</param>
 /// <param name="TunnelUrl">Public tunnel page URL, or null if no tunnel is active.</param>
 /// <param name="Tunnel">The tunnel provider in effect.</param>
 /// <param name="TunnelNote">Human note about tunnel status (e.g. tool not installed).</param>
 public sealed record PreviewInfo(
+    string PreviewId,
     string DeviceName,
     string LocalUrl,
     string StreamUrl,
