@@ -66,7 +66,7 @@ public sealed class PreviewService : IPreviewService, IDisposable
             .ConfigureAwait(false);
         _ = _locator.Resolve();
 
-        var id = "prev_" + Guid.NewGuid().ToString("N")[..8];
+        var id = "prev_" + Guid.NewGuid().ToString("N");   // full 128-bit id: not enumerable
         var token = Guid.NewGuid().ToString("N");
         var state = new PreviewState(id, token, resolved.LockKey, resolved.FfmpegInputArgs, options.Quality, resolved.DeviceName);
 

@@ -60,7 +60,7 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
         var resolved = await _camera.ResolveInputAsync(options.DeviceId, options.Width, options.Height, 0, cancellationToken)
             .ConfigureAwait(false);
 
-        var id = "sess_" + Guid.NewGuid().ToString("N")[..8];
+        var id = "sess_" + Guid.NewGuid().ToString("N");   // full 128-bit id: not enumerable
         var token = Guid.NewGuid().ToString("N");
         var state = new SessionState(id, token, options, resolved.DeviceName);
 

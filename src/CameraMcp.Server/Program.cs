@@ -57,20 +57,45 @@ if (enableStdio)
 if (enableHttpMcp)
 {
     mcp.WithHttpTransport();
-    builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    // CORS is applied ONLY to the /mcp endpoint (for browser MCP clients) — never to the device
+    // endpoints, which devices/curl reach without CORS and which must not be cross-origin readable.
+    builder.Services.AddCors(o => o.AddPolicy("mcp", p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 }
 
 var app = builder.Build();
+
+// Never leak a token-bearing URL through the Referer header.
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    await next(context);
+});
 
 app.MapDeviceEndpoints();
 
 if (enableHttpMcp)
 {
     var options = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraMcpOptions>>().Value;
+    var hasBearer = !string.IsNullOrEmpty(options.HttpMcpBearerToken);
+    var loopbackOnly = bindHost == "127.0.0.1";
+
+    // Enable the CORS middleware (no default policy); only the /mcp endpoint opts in via RequireCors.
     app.UseCors();
 
-    // Optional static bearer gate on the MCP endpoint — strongly recommended beyond loopback.
-    if (!string.IsNullOrEmpty(options.HttpMcpBearerToken))
+    // Fail closed: refuse to expose an UNAUTHENTICATED MCP endpoint beyond loopback.
+    if (!hasBearer && !loopbackOnly)
+    {
+        throw new InvalidOperationException(
+            "CameraMcp__EnableHttpMcp is on and the web host is bound beyond loopback, but " +
+            "CameraMcp__HttpMcpBearerToken is not set. Refusing to expose an unauthenticated MCP endpoint. " +
+            "Set a bearer token, or bind to 127.0.0.1.");
+    }
+
+    if (!hasBearer)
+    {
+        app.Logger.LogWarning("HTTP MCP endpoint {Path} is UNAUTHENTICATED (no HttpMcpBearerToken); loopback only.", options.HttpMcpPath);
+    }
+    else
     {
         var expected = $"Bearer {options.HttpMcpBearerToken}";
         var mcpPath = options.HttpMcpPath;
@@ -87,7 +112,7 @@ if (enableHttpMcp)
         });
     }
 
-    app.MapMcp(options.HttpMcpPath);
+    app.MapMcp(options.HttpMcpPath).RequireCors("mcp");
 }
 
 await app.RunAsync();
