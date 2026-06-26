@@ -1,7 +1,9 @@
+using CameraMcp.Server;
 using CameraMcp.Server.Configuration;
 using CameraMcp.Server.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -13,9 +15,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
-// Default to a loopback Kestrel endpoint on an OS-assigned port. The device side-channel and the
-// optional HTTP MCP transport ride on this host; LAN/internet binding is opt-in via configuration.
-builder.WebHost.UseUrls("http://127.0.0.1:0");
+// Bind the Kestrel host per configuration. Default is loopback on an OS-assigned port; set
+// CameraMcp__HttpBindAddress=0.0.0.0 (and optionally CameraMcp__HttpPort) to reach it from the LAN.
+var bindHost = NetworkHost.NormalizeBindHost(builder.Configuration[$"{CameraMcpOptions.SectionName}:HttpBindAddress"]);
+var bindPort = builder.Configuration.GetValue($"{CameraMcpOptions.SectionName}:HttpPort", 0);
+builder.WebHost.UseUrls($"http://{bindHost}:{bindPort}");
 
 builder.Services
     .AddOptions<CameraMcpOptions>()
@@ -33,6 +37,7 @@ builder.Services.AddSingleton<ITunnelManager, TunnelManager>();
 builder.Services.AddSingleton<IPreviewService, PreviewService>();
 builder.Services.AddSingleton<ICaptureQueue, CaptureQueue>();
 builder.Services.AddSingleton<ICaptureSessionService, CaptureSessionService>();
+builder.Services.AddSingleton<IHttpHostInfo, HttpHostInfo>();
 
 builder.Services
     .AddMcpServer()
@@ -42,4 +47,9 @@ builder.Services
 
 var app = builder.Build();
 
+app.MapDeviceEndpoints();
+
 await app.RunAsync();
+
+// Exposed so the test host (WebApplicationFactory) can boot the same pipeline.
+public partial class Program;

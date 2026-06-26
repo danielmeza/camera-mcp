@@ -45,4 +45,35 @@ public sealed class CameraMcpOptions
     /// few lets exposure and the stream settle.
     /// </summary>
     public int ImageWarmupFrames { get; set; } = 15;
+
+    /// <summary>
+    /// Address the built-in web host (device trigger endpoints, live preview, optional HTTP MCP
+    /// transport) binds to: <c>127.0.0.1</c> (default, loopback only — reach off-box via a tunnel),
+    /// <c>0.0.0.0</c>/<c>lan</c> (all interfaces, so same-network devices can hit it directly), or a
+    /// specific interface IP.
+    /// </summary>
+    public string HttpBindAddress { get; set; } = "127.0.0.1";
+
+    /// <summary>Port for the built-in web host; <c>0</c> (default) lets the OS assign one.</summary>
+    public int HttpPort { get; set; }
+
+    /// <summary>
+    /// Optional public base URL (e.g. <c>https://cam.example.com</c>) used when building device-facing
+    /// URLs — set this when the host is fronted by a fixed reverse proxy or custom domain. When null the
+    /// bound address and port are used.
+    /// </summary>
+    public string? PublicBaseUrl { get; set; }
+
+    /// <summary>Expose the MCP server itself over Streamable HTTP (for remote agents) at <see cref="HttpMcpPath"/>.</summary>
+    public bool EnableHttpMcp { get; set; }
+
+    /// <summary>Route the HTTP MCP transport is mapped to when <see cref="EnableHttpMcp"/> is set.</summary>
+    public string HttpMcpPath { get; set; } = "/mcp";
+
+    /// <summary>
+    /// Optional bearer token required on the HTTP MCP endpoint. When set, remote agents must send
+    /// <c>Authorization: Bearer &lt;token&gt;</c>. Strongly recommended whenever the host is reachable
+    /// beyond loopback.
+    /// </summary>
+    public string? HttpMcpBearerToken { get; set; }
 }

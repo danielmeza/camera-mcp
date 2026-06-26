@@ -26,6 +26,28 @@ public sealed class TriggerRequest
     public double? IntervalSeconds { get; init; }
 }
 
+/// <summary>Outcome of an HTTP-facing session operation, mapped to a status code by the route.</summary>
+public enum SessionOutcome
+{
+    Ok,
+    Unauthorized,
+    NotFound,
+    Failed,
+}
+
+/// <summary>Result of a device trigger, returned to the route to shape the HTTP response.</summary>
+public sealed record TriggerResult(
+    SessionOutcome Outcome,
+    int Seq = 0,
+    int FrameCount = 0,
+    bool IsBurst = false,
+    string? Name = null,
+    string? Description = null,
+    string? Error = null);
+
+/// <summary>Result of a session discovery query (<c>GET /sessions/{id}</c>).</summary>
+public sealed record SessionDescriptor(SessionOutcome Outcome, string? SessionId = null, string? Device = null);
+
 /// <summary>Details of a running capture session returned to the agent.</summary>
 /// <param name="SessionId">Stable id; the device can also discover it via <c>GET /session</c>.</param>
 /// <param name="Token">Per-session secret the device must present to trigger or query.</param>

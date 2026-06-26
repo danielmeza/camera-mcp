@@ -1,4 +1,3 @@
-using System.Net;
 using CameraMcp.Server.Models;
 using CameraMcp.Server.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,178 +7,137 @@ namespace CameraMcp.Tests.Services;
 public class CaptureSessionServiceTests
 {
     private static CaptureSessionService NewService() =>
-        new(new StubCamera(), new StubTunnel(), NullLogger<CaptureSessionService>.Instance);
+        new(new StubCamera(), new StubTunnel(), new StubHostInfo(), NullLogger<CaptureSessionService>.Instance);
+
+    private static TriggerRequest Trigger(int? count = null, double? interval = null, string? name = null, string? description = null) =>
+        new() { Count = count, IntervalSeconds = interval, Name = name, Description = description };
 
     [Fact]
-    public async Task Start_then_trigger_delivers_a_frame()
+    public async Task Start_then_trigger_delivers_a_still()
     {
-        using var service = NewService();
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
-        try
-        {
-            Assert.StartsWith("sess_", info.SessionId);
-            Assert.Equal(service.CurrentSessionId, info.SessionId);
-            Assert.Contains("/trigger?token=", info.TriggerUrl);
+        Assert.StartsWith("sess_", info.SessionId);
+        Assert.Contains($"/sessions/{info.SessionId}/trigger?token={info.Token}", info.TriggerUrl);
 
-            using var http = new HttpClient();
-            var response = await http.PostAsync(info.TriggerUrl, content: null);
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await service.TriggerAsync(info.SessionId, info.Token, Trigger(), CancellationToken.None);
+        Assert.Equal(SessionOutcome.Ok, result.Outcome);
 
-            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
-            Assert.NotNull(capture);
-            Assert.Equal(1, capture!.Seq);
-            Assert.False(capture.IsBurst);
-            Assert.Equal(640, capture.Still!.Width);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
+        var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.NotNull(capture);
+        Assert.Equal(1, capture!.Seq);
+        Assert.False(capture.IsBurst);
+        Assert.Equal(640, capture.Still!.Width);
     }
 
     [Fact]
     public async Task Trigger_with_count_produces_a_rapid_fire_burst()
     {
-        using var service = NewService();
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
-        try
-        {
-            using var http = new HttpClient();
-            var response = await http.PostAsync($"{info.TriggerUrl}&count=4&interval=0.1", content: null);
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
-            Assert.NotNull(capture);
-            Assert.True(capture!.IsBurst);
-            Assert.Equal(4, capture.FrameCount);
-            Assert.NotNull(capture.Burst);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
+        var result = await service.TriggerAsync(info.SessionId, info.Token, Trigger(count: 4, interval: 0.1), CancellationToken.None);
+        Assert.Equal(SessionOutcome.Ok, result.Outcome);
+        Assert.True(result.IsBurst);
+        Assert.Equal(4, result.FrameCount);
+
+        var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.True(capture!.IsBurst);
+        Assert.Equal(4, capture.FrameCount);
     }
 
     [Fact]
-    public async Task Trigger_carries_name_and_description_to_the_agent()
+    public async Task Trigger_carries_name_and_description()
     {
-        using var service = NewService();
+        var service = NewService();
+        var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
+
+        await service.TriggerAsync(info.SessionId, info.Token, Trigger(name: "front-door", description: "motion detected"), CancellationToken.None);
+
+        var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.Equal("front-door", capture!.Name);
+        Assert.Equal("motion detected", capture.Description);
+    }
+
+    [Fact]
+    public async Task Trigger_with_bad_token_is_unauthorized()
+    {
+        var service = NewService();
+        var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
+
+        var result = await service.TriggerAsync(info.SessionId, "wrong-token", Trigger(), CancellationToken.None);
+        Assert.Equal(SessionOutcome.Unauthorized, result.Outcome);
+
+        var missing = await service.TriggerAsync(info.SessionId, null, Trigger(), CancellationToken.None);
+        Assert.Equal(SessionOutcome.Unauthorized, missing.Outcome);
+    }
+
+    [Fact]
+    public async Task Trigger_for_unknown_session_is_not_found()
+    {
+        var service = NewService();
+        var result = await service.TriggerAsync("sess_nope", "t", Trigger(), CancellationToken.None);
+        Assert.Equal(SessionOutcome.NotFound, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Describe_validates_token_and_returns_device()
+    {
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
-        try
-        {
-            using var http = new HttpClient();
-            await http.PostAsync($"{info.TriggerUrl}&name=front-door&description=motion%20detected", content: null);
 
-            var capture = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(5), CancellationToken.None);
-            Assert.NotNull(capture);
-            Assert.Equal("front-door", capture!.Name);
-            Assert.Equal("motion detected", capture.Description);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
-    }
-
-    [Fact]
-    public async Task Trigger_without_token_is_rejected()
-    {
-        using var service = NewService();
-        var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        try
-        {
-            var baseUrl = info.TriggerUrl[..info.TriggerUrl.IndexOf('?')];
-            using var http = new HttpClient();
-            var response = await http.PostAsync(baseUrl, content: null); // no token
-            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
-    }
-
-    [Fact]
-    public async Task Get_session_returns_the_current_id()
-    {
-        using var service = NewService();
-        var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        try
-        {
-            var port = new Uri(info.TriggerUrl).Port;
-            using var http = new HttpClient();
-            var body = await http.GetStringAsync($"http://127.0.0.1:{port}/session?token={info.Token}");
-            Assert.Contains(info.SessionId, body);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
+        Assert.Equal(SessionOutcome.Ok, service.Describe(info.SessionId, info.Token).Outcome);
+        Assert.Equal(SessionOutcome.Unauthorized, service.Describe(info.SessionId, "nope").Outcome);
+        Assert.Equal(SessionOutcome.NotFound, service.Describe("sess_x", info.Token).Outcome);
     }
 
     [Fact]
     public async Task Await_with_zero_timeout_polls_without_blocking()
     {
-        using var service = NewService();
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        try
-        {
-            // No trigger yet: a zero-timeout poll must return immediately (not hang).
-            var poll = await service.AwaitNextAsync(info.SessionId, TimeSpan.Zero, CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(2));
-            Assert.Null(poll);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
+
+        var poll = await service.AwaitNextAsync(info.SessionId, TimeSpan.Zero, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Null(poll);
     }
 
     [Fact]
     public async Task Await_times_out_to_null_when_no_trigger()
     {
-        using var service = NewService();
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        try
-        {
-            var frame = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromMilliseconds(200), CancellationToken.None);
-            Assert.Null(frame);
-        }
-        finally
-        {
-            await service.StopAsync(info.SessionId);
-        }
+
+        var frame = await service.AwaitNextAsync(info.SessionId, TimeSpan.FromMilliseconds(200), CancellationToken.None);
+        Assert.Null(frame);
     }
 
     [Fact]
-    public async Task Stop_clears_the_session()
+    public async Task Stop_removes_the_session()
     {
-        using var service = NewService();
+        var service = NewService();
         var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
 
         Assert.True(await service.StopAsync(info.SessionId));
-        Assert.Null(service.CurrentSessionId);
+        Assert.Empty(service.ActiveSessionIds);
+        Assert.False(await service.StopAsync(info.SessionId));
         await Assert.ThrowsAsync<CaptureValidationException>(() =>
             service.AwaitNextAsync(info.SessionId, TimeSpan.FromSeconds(1), CancellationToken.None));
     }
 
     [Fact]
-    public async Task Starting_a_new_session_replaces_the_old_one()
+    public async Task Multiple_sessions_run_concurrently()
     {
-        using var service = NewService();
-        var first = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        var second = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
-        try
-        {
-            Assert.NotEqual(first.SessionId, second.SessionId);
-            Assert.Equal(second.SessionId, service.CurrentSessionId);
-            await Assert.ThrowsAsync<CaptureValidationException>(() =>
-                service.AwaitNextAsync(first.SessionId, TimeSpan.FromSeconds(1), CancellationToken.None));
-        }
-        finally
-        {
-            await service.StopAsync(second.SessionId);
-        }
+        var service = NewService();
+        var a = await service.StartAsync(new SessionStartOptions { DeviceId = "cam0" }, CancellationToken.None);
+        var b = await service.StartAsync(new SessionStartOptions { DeviceId = "cam1" }, CancellationToken.None);
+
+        Assert.NotEqual(a.SessionId, b.SessionId);
+        Assert.Equal(2, service.ActiveSessionIds.Count);
+
+        // Each session's token only works for itself.
+        Assert.Equal(SessionOutcome.Unauthorized, (await service.TriggerAsync(a.SessionId, b.Token, Trigger(), CancellationToken.None)).Outcome);
+        Assert.Equal(SessionOutcome.Ok, (await service.TriggerAsync(a.SessionId, a.Token, Trigger(), CancellationToken.None)).Outcome);
     }
 
     private sealed class StubCamera : ICameraService
@@ -190,9 +148,6 @@ public class CaptureSessionServiceTests
         public Task<ImageCaptureResult> CaptureImageAsync(ImageCaptureOptions options, CancellationToken cancellationToken) =>
             Task.FromResult(new ImageCaptureResult([1, 2, 3], ImageFormat.Jpeg, 640, 480, "cam", "/tmp/x.jpg"));
 
-        public Task<IAsyncDisposable> AcquireDeviceLockAsync(string lockKey, CancellationToken cancellationToken) =>
-            Task.FromResult<IAsyncDisposable>(new NoopLock());
-
         public Task<SceneCaptureResult> CaptureSceneAsync(SceneCaptureOptions options, CancellationToken cancellationToken)
         {
             var frames = Enumerable.Range(1, options.FrameCount)
@@ -200,6 +155,9 @@ public class CaptureSessionServiceTests
                 .ToList();
             return Task.FromResult(new SceneCaptureResult("cam", ImageFormat.Jpeg, 640, 480, "/tmp/scene", frames));
         }
+
+        public Task<IAsyncDisposable> AcquireDeviceLockAsync(string lockKey, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(new NoopLock());
 
         public Task<IReadOnlyList<CameraDevice>> ListDevicesAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<VideoCaptureResult> CaptureVideoAsync(VideoCaptureOptions options, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -214,5 +172,11 @@ public class CaptureSessionServiceTests
     {
         public Task<(TunnelHandle? Handle, TunnelProvider Effective, string? Note)> StartAsync(int port, TunnelProvider provider, CancellationToken cancellationToken) =>
             Task.FromResult<(TunnelHandle?, TunnelProvider, string?)>((null, TunnelProvider.None, "test: no tunnel"));
+    }
+
+    private sealed class StubHostInfo : IHttpHostInfo
+    {
+        public int Port => 5005;
+        public string BaseUrl => "http://127.0.0.1:5005";
     }
 }
