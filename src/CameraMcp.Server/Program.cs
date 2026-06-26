@@ -23,6 +23,7 @@ builder.Services.AddSingleton<ICaptureStore, CaptureStore>();
 builder.Services.AddSingleton<ICameraService, CameraService>();
 builder.Services.AddSingleton<ITunnelLauncher, TunnelLauncher>();
 builder.Services.AddSingleton<IPreviewService, PreviewService>();
+builder.Services.AddSingleton<ICaptureQueue, CaptureQueue>();
 
 builder.Services
     .AddMcpServer()

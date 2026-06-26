@@ -71,26 +71,7 @@ public sealed class CameraTools
             };
 
             var result = await _camera.CaptureImageAsync(options, cancellationToken).ConfigureAwait(false);
-            var resourceUri = _store.ToResourceUri(result.FilePath);
-
-            var metadata = CameraJson.Serialize(new
-            {
-                device = result.DeviceName,
-                format = result.Format.Name,
-                width = result.Width,
-                height = result.Height,
-                bytes = result.Bytes.Length,
-                path = result.FilePath,
-                resourceUri,
-            });
-
-            var blocks = new List<ContentBlock>
-            {
-                new TextContentBlock { Text = metadata },
-                ImageContentBlock.FromBytes(result.Bytes, result.MimeType),
-            };
-            AddResourceLink(blocks, resourceUri, result.MimeType, result.Bytes.Length);
-            return blocks;
+            return CaptureRendering.Image(result, _store);
         }
         catch (Exception ex) when (IsDomainError(ex))
         {
@@ -145,31 +126,7 @@ public sealed class CameraTools
             };
 
             var result = await _camera.CaptureVideoAsync(options, cancellationToken).ConfigureAwait(false);
-            var resourceUri = _store.ToResourceUri(result.FilePath);
-
-            var metadata = CameraJson.Serialize(new
-            {
-                path = result.FilePath,
-                resourceUri,
-                device = result.DeviceName,
-                container = result.Container.Name,
-                codec = result.Codec.Name,
-                width = result.Width,
-                height = result.Height,
-                fps = result.Fps,
-                durationSeconds = result.DurationSeconds,
-                fileSizeBytes = result.FileSizeBytes,
-                posterIncluded = result.PosterFrame is not null,
-            });
-
-            var blocks = new List<ContentBlock> { new TextContentBlock { Text = metadata } };
-            if (result.PosterFrame is { Length: > 0 } poster)
-            {
-                blocks.Add(ImageContentBlock.FromBytes(poster, VideoCaptureResult.PosterMimeType));
-            }
-
-            AddResourceLink(blocks, resourceUri, $"video/{result.Container.Name}", result.FileSizeBytes);
-            return blocks;
+            return CaptureRendering.Video(result, _store);
         }
         catch (Exception ex) when (IsDomainError(ex))
         {
@@ -224,54 +181,11 @@ public sealed class CameraTools
             };
 
             var result = await _camera.CaptureSceneAsync(options, cancellationToken).ConfigureAwait(false);
-
-            var inlineCount = result.Frames.Count(f => f.Bytes is not null);
-            var metadata = CameraJson.Serialize(new
-            {
-                device = result.DeviceName,
-                format = result.Format.Name,
-                frameCount = result.Frames.Count,
-                inlineFrameCount = inlineCount,
-                timing = options.IsNonUniform ? "non-uniform" : "uniform",
-                width = result.Width,
-                height = result.Height,
-                outputDirectory = result.OutputDirectory,
-                frames = result.Frames.Select(f => new
-                {
-                    index = f.Index,
-                    path = f.FilePath,
-                    resourceUri = _store.ToResourceUri(f.FilePath),
-                    bytes = f.SizeBytes,
-                    inline = f.Bytes is not null,
-                }),
-            });
-
-            // All frames are on disk (paths above); a bounded prefix is also returned inline so the
-            // agent can read the sequence without re-fetching, without an unbounded response.
-            var blocks = new List<ContentBlock> { new TextContentBlock { Text = metadata } };
-            foreach (var frame in result.Frames)
-            {
-                if (frame.Bytes is { Length: > 0 } bytes)
-                {
-                    blocks.Add(ImageContentBlock.FromBytes(bytes, result.Format.MimeType));
-                }
-            }
-
-            return blocks;
+            return CaptureRendering.Scene(result, _store);
         }
         catch (Exception ex) when (IsDomainError(ex))
         {
             throw new McpException(ex.Message);
-        }
-    }
-
-    /// <summary>Adds a resource_link content block so clients can fetch the file's bytes over MCP by URI.</summary>
-    private static void AddResourceLink(List<ContentBlock> blocks, string? uri, string mimeType, long size)
-    {
-        if (!string.IsNullOrEmpty(uri))
-        {
-            var name = uri[(uri.LastIndexOf('/') + 1)..];
-            blocks.Add(new ResourceLinkBlock { Uri = uri, Name = name, MimeType = mimeType, Size = size });
         }
     }
 
