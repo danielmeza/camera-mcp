@@ -75,27 +75,37 @@ public sealed class PreviewService : IPreviewService, IDisposable
             session.AcceptLoop = Task.Run(() => AcceptLoopAsync(session));
             _session = session;
 
-            TunnelProvider effectiveTunnel = TunnelProvider.None;
-            string? tunnelUrl = null;
-            string? tunnelNote = null;
-            if (options.Tunnel != TunnelProvider.None)
+            try
             {
-                var (handle, effective, note) = await _tunnel.StartAsync(port, options.Tunnel, cancellationToken).ConfigureAwait(false);
-                session.Tunnel = handle;
-                effectiveTunnel = effective;
-                tunnelNote = note;
-                tunnelUrl = handle is null ? null : $"{handle.PublicUrl}/?token={token}";
+                TunnelProvider effectiveTunnel = TunnelProvider.None;
+                string? tunnelUrl = null;
+                string? tunnelNote = null;
+                if (options.Tunnel != TunnelProvider.None)
+                {
+                    var (handle, effective, note) = await _tunnel.StartAsync(port, options.Tunnel, cancellationToken).ConfigureAwait(false);
+                    session.Tunnel = handle;
+                    effectiveTunnel = effective;
+                    tunnelNote = note;
+                    tunnelUrl = handle is null ? null : $"{handle.PublicUrl}/?token={token}";
+                }
+
+                _logger.LogInformation("Live preview started for {Device} on {Url}.", resolved.DeviceName, $"http://{Loopback}:{port}/");
+
+                return new PreviewInfo(
+                    resolved.DeviceName,
+                    LocalUrl: $"http://{Loopback}:{port}/?token={token}",
+                    StreamUrl: $"http://{Loopback}:{port}/stream?token={token}",
+                    TunnelUrl: tunnelUrl,
+                    Tunnel: effectiveTunnel,
+                    TunnelNote: tunnelNote);
             }
-
-            _logger.LogInformation("Live preview started for {Device} on {Url}.", resolved.DeviceName, $"http://{Loopback}:{port}/");
-
-            return new PreviewInfo(
-                resolved.DeviceName,
-                LocalUrl: $"http://{Loopback}:{port}/?token={token}",
-                StreamUrl: $"http://{Loopback}:{port}/stream?token={token}",
-                TunnelUrl: tunnelUrl,
-                Tunnel: effectiveTunnel,
-                TunnelNote: tunnelNote);
+            catch
+            {
+                // Tear down the half-started preview so its listener/loop don't leak.
+                await StopInternalAsync(session).ConfigureAwait(false);
+                _session = null;
+                throw;
+            }
         }
         finally
         {

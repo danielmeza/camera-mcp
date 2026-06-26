@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -77,28 +78,38 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
             session.AcceptLoop = Task.Run(() => AcceptLoopAsync(session));
             _session = session;
 
-            TunnelProvider effective = TunnelProvider.None;
-            string? tunnelTriggerUrl = null;
-            string? note = null;
-            if (options.Tunnel != TunnelProvider.None)
+            try
             {
-                var (handle, eff, n) = await _tunnel.StartAsync(port, options.Tunnel, cancellationToken).ConfigureAwait(false);
-                session.Tunnel = handle;
-                effective = eff;
-                note = n;
-                tunnelTriggerUrl = handle is null ? null : $"{handle.PublicUrl}/trigger?token={token}";
+                TunnelProvider effective = TunnelProvider.None;
+                string? tunnelTriggerUrl = null;
+                string? note = null;
+                if (options.Tunnel != TunnelProvider.None)
+                {
+                    var (handle, eff, n) = await _tunnel.StartAsync(port, options.Tunnel, cancellationToken).ConfigureAwait(false);
+                    session.Tunnel = handle;
+                    effective = eff;
+                    note = n;
+                    tunnelTriggerUrl = handle is null ? null : $"{handle.PublicUrl}/trigger?token={token}";
+                }
+
+                _logger.LogInformation("Capture session {Id} started for {Device} on port {Port}.", session.Id, resolved.DeviceName, port);
+
+                return new SessionInfo(
+                    session.Id,
+                    token,
+                    TriggerUrl: $"http://{LoopbackHttp.Address}:{port}/trigger?token={token}",
+                    TunnelTriggerUrl: tunnelTriggerUrl,
+                    DeviceName: resolved.DeviceName,
+                    Tunnel: effective,
+                    TunnelNote: note);
             }
-
-            _logger.LogInformation("Capture session {Id} started for {Device} on port {Port}.", session.Id, resolved.DeviceName, port);
-
-            return new SessionInfo(
-                session.Id,
-                token,
-                TriggerUrl: $"http://{LoopbackHttp.Address}:{port}/trigger?token={token}",
-                TunnelTriggerUrl: tunnelTriggerUrl,
-                DeviceName: resolved.DeviceName,
-                Tunnel: effective,
-                TunnelNote: note);
+            catch
+            {
+                // Tear down the half-started session so its listener/loop/token don't leak.
+                await StopInternalAsync(session).ConfigureAwait(false);
+                _session = null;
+                throw;
+            }
         }
         finally
         {
@@ -134,11 +145,14 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
             throw new CaptureValidationException($"No active capture session '{sessionId}'.");
         }
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeout > TimeSpan.Zero)
+        // Zero/negative timeout is a non-blocking poll: return a buffered capture if one is ready, else null.
+        if (timeout <= TimeSpan.Zero)
         {
-            cts.CancelAfter(timeout);
+            return session.Frames.Reader.TryRead(out var ready) ? ready : null;
         }
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
 
         try
         {
@@ -168,7 +182,7 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
                 break;
             }
 
-            _ = Task.Run(() => HandleRequestAsync(session, context));
+            session.TrackHandler(Task.Run(() => HandleRequestAsync(session, context)));
         }
     }
 
@@ -318,12 +332,18 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
 
     private async Task StopInternalAsync(Session session)
     {
-        session.Cts.Cancel();
-        session.Frames.Writer.TryComplete();
+        session.Cts.Cancel();                                    // signal the accept loop + any in-flight capture
         session.Tunnel?.Dispose();
         try { session.Listener.Stop(); } catch (Exception) { /* ignore */ }
         try { session.Listener.Close(); } catch (Exception) { /* ignore */ }
         try { await session.AcceptLoop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { /* best effort */ }
+
+        // Drain in-flight trigger handlers BEFORE completing the channel / disposing the token, so a
+        // racing trigger can't write after completion (lost capture) or touch a disposed CTS.
+        try { await Task.WhenAll(session.InFlightHandlers).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+        catch (Exception) { /* best effort — cancellation already signalled */ }
+
+        session.Frames.Writer.TryComplete();
         session.Cts.Dispose();
         _logger.LogInformation("Capture session {Id} stopped.", session.Id);
     }
@@ -355,5 +375,19 @@ public sealed class CaptureSessionService : ICaptureSessionService, IDisposable
         public TunnelHandle? Tunnel { get; set; }
         public Task AcceptLoop { get; set; } = Task.CompletedTask;
         public int Seq;
+
+        private readonly ConcurrentDictionary<Task, byte> _handlers = new();
+
+        /// <summary>Tracks an in-flight request handler so a stop can drain it before tearing down.</summary>
+        public void TrackHandler(Task handler)
+        {
+            _handlers.TryAdd(handler, 0);
+            _ = handler.ContinueWith(
+                static (t, state) => ((ConcurrentDictionary<Task, byte>)state!).TryRemove(t, out _),
+                _handlers,
+                TaskScheduler.Default);
+        }
+
+        public Task[] InFlightHandlers => _handlers.Keys.ToArray();
     }
 }

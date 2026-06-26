@@ -63,11 +63,14 @@ public sealed class SceneCaptureOptions
         return timestamps;
     }
 
-    /// <summary>Total capture span (excluding start delay), used for timeouts and the duration cap.</summary>
+    /// <summary>
+    /// Total capture span (excluding start delay), used for timeouts and the duration cap. N frames span
+    /// the (N-1) gaps between them — consistent with the non-uniform sum-of-gaps case.
+    /// </summary>
     public double SpanSeconds(double defaultInterval) =>
         IsNonUniform
             ? Intervals!.Sum()
-            : ResolveFrameCount() * ResolveUniformInterval(defaultInterval);
+            : (ResolveFrameCount() - 1) * ResolveUniformInterval(defaultInterval);
 
     public void Validate(int maxFrames, int maxDurationSeconds, double defaultInterval, int maxStartDelaySeconds)
     {

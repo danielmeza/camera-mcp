@@ -118,6 +118,24 @@ public class CaptureSessionServiceTests
     }
 
     [Fact]
+    public async Task Await_with_zero_timeout_polls_without_blocking()
+    {
+        using var service = NewService();
+        var info = await service.StartAsync(new SessionStartOptions(), CancellationToken.None);
+        try
+        {
+            // No trigger yet: a zero-timeout poll must return immediately (not hang).
+            var poll = await service.AwaitNextAsync(info.SessionId, TimeSpan.Zero, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Null(poll);
+        }
+        finally
+        {
+            await service.StopAsync(info.SessionId);
+        }
+    }
+
+    [Fact]
     public async Task Await_times_out_to_null_when_no_trigger()
     {
         using var service = NewService();

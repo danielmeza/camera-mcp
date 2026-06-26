@@ -47,9 +47,19 @@ public class SceneCaptureOptionsTests
     [Fact]
     public void Uniform_rejects_span_over_duration_cap()
     {
-        // 10 frames x 40s = 400s > 300s cap.
+        // 10 frames span 9 gaps x 40s = 360s > 300s cap.
         Assert.Throws<CaptureValidationException>(() =>
             Validate(new SceneCaptureOptions { FrameCount = 10, IntervalSeconds = 40 }));
+    }
+
+    [Fact]
+    public void Uniform_span_counts_gaps_not_frames()
+    {
+        // N frames span (N-1) intervals: 8 frames x 40s gaps = 280s, which is under the 300s cap and
+        // would be wrongly rejected by an off-by-one N*interval (= 320s) calculation.
+        var options = new SceneCaptureOptions { FrameCount = 8, IntervalSeconds = 40 };
+        Assert.Equal(280, options.SpanSeconds(DefaultInterval));
+        Validate(options); // must not throw
     }
 
     // ---- non-uniform ----
