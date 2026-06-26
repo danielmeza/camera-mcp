@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using CameraMcp.Server.Models;
 using Microsoft.Extensions.Logging;
@@ -69,7 +68,7 @@ public sealed class PreviewService : IPreviewService, IDisposable
             }
 
             var token = Guid.NewGuid().ToString("N");
-            var (listener, port) = StartListenerWithRetry();
+            var (listener, port) = LoopbackHttp.StartWithRetry();
 
             var session = new Session(
                 listener, token, port, resolved.LockKey, resolved.FfmpegInputArgs, options.Quality, resolved.DeviceName);
@@ -122,44 +121,6 @@ public sealed class PreviewService : IPreviewService, IDisposable
         {
             _gate.Release();
         }
-    }
-
-    private static int FreeLoopbackPort()
-    {
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        try
-        {
-            return ((IPEndPoint)probe.LocalEndpoint).Port;
-        }
-        finally
-        {
-            probe.Stop();
-        }
-    }
-
-    /// <summary>Binds a loopback listener, retrying on the small race between probing a free port and binding it.</summary>
-    private static (HttpListener Listener, int Port) StartListenerWithRetry()
-    {
-        HttpListenerException? last = null;
-        for (var attempt = 0; attempt < 5; attempt++)
-        {
-            var port = FreeLoopbackPort();
-            var listener = new HttpListener();
-            listener.Prefixes.Add($"http://{Loopback}:{port}/");
-            try
-            {
-                listener.Start();
-                return (listener, port);
-            }
-            catch (HttpListenerException ex)
-            {
-                last = ex; // lost the port race — try another port
-                listener.Close();
-            }
-        }
-
-        throw last ?? new HttpListenerException();
     }
 
     private async Task AcceptLoopAsync(Session session)
