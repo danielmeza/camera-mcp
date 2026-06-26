@@ -34,6 +34,50 @@ public class SessionEndpointsTests
         return new Scope(app, app.GetTestClient(), app.Services.GetRequiredService<ICaptureSessionService>());
     }
 
+    private static async Task<Scope> StartHostWithCorsAsync(string allowedOrigin)
+    {
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton<ICameraService, RouteStubCamera>();
+        builder.Services.AddSingleton<ITunnelLauncher, RouteStubTunnel>();
+        builder.Services.AddSingleton<IHttpHostInfo, RouteStubHostInfo>();
+        builder.Services.AddSingleton<ICaptureSessionService, CaptureSessionService>();
+        builder.Services.AddCors(o => o.AddPolicy("device", p => p.WithOrigins(allowedOrigin).AllowAnyHeader().AllowAnyMethod()));
+
+        var app = builder.Build();
+        app.UseCors();
+        app.MapDeviceEndpoints("device");
+        await app.StartAsync();
+        return new Scope(app, app.GetTestClient(), app.Services.GetRequiredService<ICaptureSessionService>());
+    }
+
+    [Fact]
+    public async Task Allowed_web_origin_gets_a_cors_header()
+    {
+        await using var scope = await StartHostWithCorsAsync("https://app.example.com");
+        var info = await scope.Sessions.StartAsync(new SessionStartOptions(), CancellationToken.None);
+
+        var req = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{info.SessionId}?token={info.Token}");
+        req.Headers.TryAddWithoutValidation("Origin", "https://app.example.com");
+        var resp = await scope.Client.SendAsync(req);
+
+        Assert.Equal("https://app.example.com", resp.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Fact]
+    public async Task Disallowed_web_origin_gets_no_cors_header()
+    {
+        await using var scope = await StartHostWithCorsAsync("https://app.example.com");
+        var info = await scope.Sessions.StartAsync(new SessionStartOptions(), CancellationToken.None);
+
+        var req = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{info.SessionId}?token={info.Token}");
+        req.Headers.TryAddWithoutValidation("Origin", "https://evil.example.com");
+        var resp = await scope.Client.SendAsync(req);
+
+        Assert.False(resp.Headers.Contains("Access-Control-Allow-Origin"));
+    }
+
     [Fact]
     public async Task Post_trigger_with_token_captures_a_burst()
     {

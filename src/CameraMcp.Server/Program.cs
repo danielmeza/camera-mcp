@@ -45,6 +45,10 @@ builder.Services.AddSingleton<IHttpHostInfo, HttpHostInfo>();
 // CameraMcp__StdioTransport=false so the process doesn't shut down on stdin EOF.
 var enableHttpMcp = builder.Configuration.GetValue($"{CameraMcpOptions.SectionName}:EnableHttpMcp", false);
 var enableStdio = builder.Configuration.GetValue($"{CameraMcpOptions.SectionName}:StdioTransport", true);
+var allowedWebOrigins = (builder.Configuration[$"{CameraMcpOptions.SectionName}:AllowedWebOrigins"] ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var hasDeviceCors = allowedWebOrigins.Length > 0;
+
 var mcp = builder.Services
     .AddMcpServer()
     .WithToolsFromAssembly()
@@ -57,9 +61,24 @@ if (enableStdio)
 if (enableHttpMcp)
 {
     mcp.WithHttpTransport();
-    // CORS is applied ONLY to the /mcp endpoint (for browser MCP clients) — never to the device
-    // endpoints, which devices/curl reach without CORS and which must not be cross-origin readable.
-    builder.Services.AddCors(o => o.AddPolicy("mcp", p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+}
+
+// CORS policies are per-endpoint and never wildcard for device endpoints. "mcp" (any origin, for browser
+// MCP clients) is applied only to /mcp; "device" (an explicit allowlist) only to the device endpoints.
+if (enableHttpMcp || hasDeviceCors)
+{
+    builder.Services.AddCors(o =>
+    {
+        if (enableHttpMcp)
+        {
+            o.AddPolicy("mcp", p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+        }
+
+        if (hasDeviceCors)
+        {
+            o.AddPolicy("device", p => p.WithOrigins(allowedWebOrigins).AllowAnyHeader().AllowAnyMethod());
+        }
+    });
 }
 
 var app = builder.Build();
@@ -71,16 +90,19 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
-app.MapDeviceEndpoints();
+// CORS middleware (no default policy) — endpoints opt in by name via RequireCors.
+if (enableHttpMcp || hasDeviceCors)
+{
+    app.UseCors();
+}
+
+app.MapDeviceEndpoints(hasDeviceCors ? "device" : null);
 
 if (enableHttpMcp)
 {
     var options = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<CameraMcpOptions>>().Value;
     var hasBearer = !string.IsNullOrEmpty(options.HttpMcpBearerToken);
     var loopbackOnly = bindHost == "127.0.0.1";
-
-    // Enable the CORS middleware (no default policy); only the /mcp endpoint opts in via RequireCors.
-    app.UseCors();
 
     // Fail closed: refuse to expose an UNAUTHENTICATED MCP endpoint beyond loopback.
     if (!hasBearer && !loopbackOnly)

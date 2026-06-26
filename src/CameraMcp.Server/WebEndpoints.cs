@@ -11,10 +11,14 @@ namespace CameraMcp.Server;
 /// <summary>Maps the device-facing side-channel routes onto the shared Kestrel host.</summary>
 internal static class WebEndpoints
 {
-    public static void MapDeviceEndpoints(this WebApplication app)
+    public static void MapDeviceEndpoints(this WebApplication app, string? corsPolicy = null)
     {
+        // Group the device routes so an optional CORS policy (an explicit origin allowlist) can be applied
+        // to all of them at once. Without a policy they have no CORS metadata — fine for devices/servers.
+        var group = app.MapGroup(string.Empty);
+
         // A device triggers a capture (still or rapid-fire burst). Token in ?token= or X-Session-Token.
-        app.MapPost("/sessions/{sessionId}/trigger",
+        group.MapPost("/sessions/{sessionId}/trigger",
             async (string sessionId, HttpRequest http, [FromServices] ICaptureSessionService sessions, CancellationToken ct) =>
             {
                 var token = ExtractToken(http);
@@ -37,7 +41,7 @@ internal static class WebEndpoints
             });
 
         // A device discovers / health-checks its session.
-        app.MapGet("/sessions/{sessionId}",
+        group.MapGet("/sessions/{sessionId}",
             (string sessionId, HttpRequest http, [FromServices] ICaptureSessionService sessions) =>
             {
                 var descriptor = sessions.Describe(sessionId, ExtractToken(http));
@@ -50,13 +54,18 @@ internal static class WebEndpoints
             });
 
         // Live preview: a viewer page and the MJPEG stream behind it (for a human in a browser).
-        app.MapGet("/preview/{previewId}",
+        group.MapGet("/preview/{previewId}",
             (string previewId, HttpRequest http, HttpResponse response, [FromServices] IPreviewService preview) =>
                 preview.ServePageAsync(previewId, ExtractToken(http), response));
 
-        app.MapGet("/preview/{previewId}/stream",
+        group.MapGet("/preview/{previewId}/stream",
             (string previewId, HttpRequest http, HttpResponse response, [FromServices] IPreviewService preview, CancellationToken ct) =>
                 preview.ServeStreamAsync(previewId, ExtractToken(http), response, ct));
+
+        if (corsPolicy is not null)
+        {
+            group.RequireCors(corsPolicy);
+        }
     }
 
     private static string? ExtractToken(HttpRequest http) =>

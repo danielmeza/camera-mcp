@@ -79,4 +79,12 @@ public sealed class CameraMcpOptions
     /// beyond loopback.
     /// </summary>
     public string? HttpMcpBearerToken { get; set; }
+
+    /// <summary>
+    /// Comma-separated list of web origins (e.g. <c>https://dash.example.com,http://localhost:3000</c>)
+    /// allowed to call the device/preview endpoints from a browser. Empty (default) means no browser
+    /// cross-origin access — the endpoints still work for devices/servers/curl, which ignore CORS. Never
+    /// a wildcard: only the listed origins are permitted, and the per-session token is still required.
+    /// </summary>
+    public string? AllowedWebOrigins { get; set; }
 }

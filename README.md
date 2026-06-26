@@ -202,6 +202,11 @@ trigger endpoints, the live preview, and — optionally — the MCP protocol its
 > endpoints, a bearer token for `/mcp`) and prefer a tunnel (HTTPS) or a TLS-terminating proxy over plain
 > HTTP on untrusted networks.
 
+The device trigger/preview endpoints are reached by **devices, servers, and `curl`**, which ignore CORS —
+so they need no CORS config. CORS only matters if a **browser web app on another origin** calls them via
+`fetch()`; for that, set `CameraMcp__AllowedWebOrigins` to an explicit comma-separated allowlist (never a
+wildcard). The per-session token is still required either way.
+
 ## Transmitting images over MCP (no file path needed)
 
 Captures are delivered three ways, all over the MCP protocol — useful when the agent is **remote** and the
@@ -285,6 +290,7 @@ Settings bind from environment variables with the `CameraMcp__` prefix:
 | `CameraMcp__EnableHttpMcp` | `false` | also expose the MCP server over Streamable HTTP for remote agents |
 | `CameraMcp__HttpMcpPath` | `/mcp` | route for the HTTP MCP transport |
 | `CameraMcp__HttpMcpBearerToken` | — | bearer token required on the HTTP MCP endpoint (recommended off-loopback) |
+| `CameraMcp__AllowedWebOrigins` | — | comma-separated origins allowed to call device endpoints from a **browser** (never a wildcard) |
 
 ## Bundling FFmpeg (zero-setup distribution)
 

@@ -165,6 +165,7 @@ Set via environment variables in your client's `env` block (prefix `CameraMcp__`
 | `CameraMcp__HttpPort` | `0` | web-host port (`0` = OS-assigned) |
 | `CameraMcp__EnableHttpMcp` | `false` | also expose the MCP server over Streamable HTTP (remote agents) |
 | `CameraMcp__HttpMcpBearerToken` | — | bearer token required on the `/mcp` endpoint |
+| `CameraMcp__AllowedWebOrigins` | — | browser origins allowed to call device endpoints (comma-separated allowlist) |
 | `CameraMcp__StdioTransport` | `true` | set `false` for a pure-HTTP deployment |
 
 ## Exposing the server on a network
