@@ -38,10 +38,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The MCP server hosts a Kestrel web app (device side-channel + optional HTTP MCP transport)
+         alongside the stdio transport, so it references the ASP.NET Core shared framework. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Ardalis.SmartEnum" Version="8.2.0" />
     <PackageReference Include="FlashCap" Version="1.11.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
     <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
   </ItemGroup>
 
   <!-- Opt-in per-RID ffmpeg bundling (dotnet publish -r <rid> -p:BundleFFmpeg=true). -->

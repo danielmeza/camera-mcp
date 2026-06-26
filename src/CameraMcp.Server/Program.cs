@@ -1,14 +1,21 @@
 using CameraMcp.Server.Configuration;
 using CameraMcp.Server.Services;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
-// stdio transport reserves stdout for the JSON-RPC protocol stream, so every log
-// record (all levels) must be routed to stderr instead.
+// stdout is reserved for the MCP stdio JSON-RPC stream. Drop the default console provider (which
+// writes to stdout) and route every log record — including Kestrel/hosting messages — to stderr.
+builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+
+// Default to a loopback Kestrel endpoint on an OS-assigned port. The device side-channel and the
+// optional HTTP MCP transport ride on this host; LAN/internet binding is opt-in via configuration.
+builder.WebHost.UseUrls("http://127.0.0.1:0");
 
 builder.Services
     .AddOptions<CameraMcpOptions>()
@@ -33,4 +40,6 @@ builder.Services
     .WithToolsFromAssembly()
     .WithResourcesFromAssembly();
 
-await builder.Build().RunAsync();
+var app = builder.Build();
+
+await app.RunAsync();
