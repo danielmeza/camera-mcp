@@ -1,0 +1,34 @@
+## .NET / build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+artifacts/
+
+## Bundled native binaries fetched at build time (per-RID ffmpeg)
+ffmpeg-bin/
+
+## Downloaded/extracted ffmpeg cache (large; re-fetched on demand)
+ffmpeg-cache/
+
+## Published self-contained install output
+dist/
+
+## Local capture/test scratch output
+probe-out/
+
+## Captured media (default output directory used by the server)
+captures/
+*.mp4
+*.webm
+*.mkv
+
+## IDE
+.vs/
+.idea/
+*.suo
+
+## OS
+.DS_Store
+Thumbs.db

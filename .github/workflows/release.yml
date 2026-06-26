@@ -1,0 +1,115 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` to cut a release: packs + (optionally) pushes the NuGet,
+# builds per-OS self-contained archives with bundled ffmpeg, and creates a GitHub Release.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  nuget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Derive version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync server.json version to the tag
+        shell: bash
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$v\"/g" src/CameraMcp.Server/.mcp/server.json
+
+      - name: Install ffmpeg (for integration tests)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Pack
+        run: dotnet pack src/CameraMcp.Server -c Release -p:Version=${{ steps.ver.outputs.version }} -o artifacts
+
+      - name: Push to NuGet (only if NUGET_API_KEY secret is set)
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        if: ${{ env.NUGET_API_KEY != '' }}
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget
+          path: artifacts/*.nupkg
+
+  selfcontained:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Derive version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish self-contained with bundled ffmpeg
+        shell: bash
+        run: |
+          dotnet publish src/CameraMcp.Server -c Release -r ${{ matrix.rid }} --self-contained \
+            -p:BundleFFmpeg=true -p:Version=${{ steps.ver.outputs.version }} -o publish
+
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path publish/* -DestinationPath "camera-mcp-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.zip"
+
+      - name: Archive (Unix, preserves exec bits)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czf "camera-mcp-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.tar.gz" -C publish .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selfcontained-${{ matrix.rid }}
+          path: |
+            *.zip
+            *.tar.gz
+
+  release:
+    needs: [ nuget, selfcontained ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            $(find dist -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.nupkg' \))

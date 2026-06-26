@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CameraMcp.Server/CameraMcp.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CameraMcp.Tests/CameraMcp.Tests.csproj" />
+  </Folder>
+</Solution>

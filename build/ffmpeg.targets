@@ -1,0 +1,101 @@
+<Project>
+
+  <!--
+    Bundles an ffmpeg executable next to the published app so the server runs with zero setup.
+    Opt-in: pass -p:BundleFFmpeg=true (kept off by default so normal dev builds never hit the network).
+
+    The binary is cached under ffmpeg-cache/<rid>/ so repeat publishes skip the download, and copied
+    into <output>/ffmpeg-bin/, where FFmpegLocator looks before falling back to PATH.
+  -->
+
+  <PropertyGroup>
+    <_FFmpegRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_FFmpegRid>
+    <_FFmpegExeName>ffmpeg</_FFmpegExeName>
+    <_FFmpegExeName Condition="$(_FFmpegRid.StartsWith('win'))">ffmpeg.exe</_FFmpegExeName>
+    <!--
+      Cache paths are computed statically (and fully normalized via GetFullPath) so the
+      Exists() cache check on _FetchFFmpeg is reliable: properties set inside a dependency
+      target are not guaranteed to be visible when the dependent target's Condition is evaluated.
+    -->
+    <_FFmpegCacheRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../ffmpeg-cache'))</_FFmpegCacheRoot>
+    <_FFmpegCacheDir Condition="'$(_FFmpegRid)' != ''">$([System.IO.Path]::GetFullPath('$(_FFmpegCacheRoot)/$(_FFmpegRid)'))</_FFmpegCacheDir>
+    <_FFmpegCachedExe Condition="'$(_FFmpegRid)' != ''">$([System.IO.Path]::GetFullPath('$(_FFmpegCacheDir)/$(_FFmpegExeName)'))</_FFmpegCachedExe>
+  </PropertyGroup>
+
+  <!-- Resolve the download source for this RID (an explicit override wins). -->
+  <Target Name="_ResolveFFmpegSource">
+    <Error Condition="'$(_FFmpegRid)' == ''"
+           Text="BundleFFmpeg requires a runtime identifier. Publish with -r &lt;rid&gt; (e.g. -r win-x64)." />
+
+    <ItemGroup>
+      <_SelectedFFmpegSource Include="@(FFmpegSource)" Condition="'%(Identity)' == '$(_FFmpegRid)'" />
+    </ItemGroup>
+
+    <PropertyGroup>
+      <_FFmpegUrl Condition="'$(FFmpegDownloadUrl)' != ''">$(FFmpegDownloadUrl)</_FFmpegUrl>
+      <_FFmpegUrl Condition="'$(_FFmpegUrl)' == ''">@(_SelectedFFmpegSource->'%(Url)')</_FFmpegUrl>
+      <_FFmpegArchive Condition="'$(FFmpegArchive)' != ''">$(FFmpegArchive)</_FFmpegArchive>
+      <_FFmpegArchive Condition="'$(_FFmpegArchive)' == ''">@(_SelectedFFmpegSource->'%(Archive)')</_FFmpegArchive>
+      <_FFmpegExeGlob Condition="'$(_FFmpegExeGlob)' == ''">@(_SelectedFFmpegSource->'%(ExeGlob)')</_FFmpegExeGlob>
+    </PropertyGroup>
+
+    <Error Condition="'$(_FFmpegUrl)' == ''"
+           Text="No bundled ffmpeg source is configured for RID '$(_FFmpegRid)'. Add one to build/ffmpeg-sources.props or pass -p:FFmpegDownloadUrl=&lt;url&gt; -p:FFmpegArchive=&lt;zip|tar&gt; -p:_FFmpegExeGlob=&lt;glob&gt;." />
+  </Target>
+
+  <!-- Download + extract into the cache (skipped when the cached binary already exists). -->
+  <Target Name="_FetchFFmpeg" DependsOnTargets="_ResolveFFmpegSource"
+          Condition="!Exists('$(_FFmpegCachedExe)')">
+    <MakeDir Directories="$(_FFmpegCacheDir);$(_FFmpegCacheDir)/_archive" />
+
+    <PropertyGroup>
+      <_FFmpegArchiveExt Condition="'$(_FFmpegArchive)' == 'zip'">zip</_FFmpegArchiveExt>
+      <_FFmpegArchiveExt Condition="'$(_FFmpegArchive)' == 'tar'">tar.xz</_FFmpegArchiveExt>
+      <_FFmpegArchiveFile>$(_FFmpegCacheDir)/_archive/ffmpeg.$(_FFmpegArchiveExt)</_FFmpegArchiveFile>
+      <_FFmpegExtractDir>$(_FFmpegCacheDir)/_extract</_FFmpegExtractDir>
+    </PropertyGroup>
+
+    <Message Importance="high" Text="[ffmpeg] Downloading $(_FFmpegUrl) for $(_FFmpegRid)..." />
+    <DownloadFile SourceUrl="$(_FFmpegUrl)" DestinationFolder="$(_FFmpegCacheDir)/_archive"
+                  DestinationFileName="ffmpeg.$(_FFmpegArchiveExt)" Retries="3" />
+
+    <RemoveDir Directories="$(_FFmpegExtractDir)" />
+    <MakeDir Directories="$(_FFmpegExtractDir)" />
+
+    <!-- zip via the built-in task; tar.xz via the platform tar CLI. -->
+    <Unzip Condition="'$(_FFmpegArchive)' == 'zip'"
+           SourceFiles="$(_FFmpegArchiveFile)" DestinationFolder="$(_FFmpegExtractDir)" />
+    <Exec Condition="'$(_FFmpegArchive)' == 'tar'"
+          Command="tar -xf &quot;$(_FFmpegArchiveFile)&quot; -C &quot;$(_FFmpegExtractDir)&quot;" />
+
+    <ItemGroup>
+      <_FFmpegFound Include="$(_FFmpegExtractDir)/$(_FFmpegExeGlob)" />
+    </ItemGroup>
+    <Error Condition="'@(_FFmpegFound)' == ''"
+           Text="Could not find '$(_FFmpegExeGlob)' inside the extracted ffmpeg archive for $(_FFmpegRid)." />
+
+    <Copy SourceFiles="@(_FFmpegFound)" DestinationFiles="$(_FFmpegCachedExe)" OverwriteReadOnlyFiles="true" />
+    <Exec Condition="!$(_FFmpegRid.StartsWith('win'))" Command="chmod +x &quot;$(_FFmpegCachedExe)&quot;" />
+    <RemoveDir Directories="$(_FFmpegExtractDir);$(_FFmpegCacheDir)/_archive" />
+    <Message Importance="high" Text="[ffmpeg] Cached $(_FFmpegCachedExe)" />
+  </Target>
+
+  <!-- Copy the cached binary into the build/publish output where the locator finds it. -->
+  <Target Name="BundleFFmpeg" Condition="'$(BundleFFmpeg)' == 'true'"
+          DependsOnTargets="_FetchFFmpeg"
+          AfterTargets="Build;Publish">
+    <PropertyGroup>
+      <_FFmpegBundleDir Condition="'$(PublishDir)' != ''">$(PublishDir)ffmpeg-bin</_FFmpegBundleDir>
+      <_FFmpegBundleDir Condition="'$(_FFmpegBundleDir)' == ''">$(OutDir)ffmpeg-bin</_FFmpegBundleDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(_FFmpegBundleDir)" />
+    <Copy SourceFiles="$(_FFmpegCachedExe)"
+          DestinationFiles="$(_FFmpegBundleDir)/$(_FFmpegExeName)"
+          OverwriteReadOnlyFiles="true" SkipUnchangedFiles="true" />
+    <Exec Condition="!$(_FFmpegRid.StartsWith('win'))"
+          Command="chmod +x &quot;$(_FFmpegBundleDir)/$(_FFmpegExeName)&quot;" />
+    <Message Importance="high" Text="[ffmpeg] Bundled into $(_FFmpegBundleDir)" />
+  </Target>
+
+</Project>

@@ -1,0 +1,28 @@
+<Project>
+
+  <!--
+    Per-RID ffmpeg download sources used by the BundleFFmpeg target. URLs point at static/standalone
+    builds that include the codecs this server uses (libx264, libx265, libvpx-vp9, libwebp).
+
+    Override a single source from the command line with:
+      dotnet publish -r linux-x64 -p:BundleFFmpeg=true -p:FFmpegDownloadUrl=https://.../ffmpeg.tar.xz
+
+    Archive: 'zip' is extracted with the MSBuild Unzip task; 'tar' is extracted with the `tar` CLI.
+    ExeGlob: where the ffmpeg binary lives inside the extracted archive.
+  -->
+  <ItemGroup>
+    <FFmpegSource Include="win-x64"
+                  Url="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+                  Archive="zip" ExeGlob="**/bin/ffmpeg.exe" />
+    <FFmpegSource Include="linux-x64"
+                  Url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+                  Archive="tar" ExeGlob="**/ffmpeg" />
+    <FFmpegSource Include="linux-arm64"
+                  Url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz"
+                  Archive="tar" ExeGlob="**/ffmpeg" />
+    <FFmpegSource Include="osx-x64"
+                  Url="https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
+                  Archive="zip" ExeGlob="**/ffmpeg" />
+  </ItemGroup>
+
+</Project>

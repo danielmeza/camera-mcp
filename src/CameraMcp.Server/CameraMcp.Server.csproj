@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>camera-mcp</AssemblyName>
+    <RootNamespace>CameraMcp.Server</RootNamespace>
+    <!-- Server reads JSON-RPC on stdin and must keep stdout clean for the protocol. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <!-- Pack as an MCP-server .NET tool (run via `dnx DanielMeza.CameraMcp`). Portable/framework-dependent:
+       needs the .NET runtime and ffmpeg on PATH. The bundled-ffmpeg builds are the GitHub release zips. -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <PackageType>McpServer</PackageType>
+    <ToolCommandName>camera-mcp</ToolCommandName>
+    <PackageId>DanielMeza.CameraMcp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Daniel Meza</Authors>
+    <Title>Camera MCP Server</Title>
+    <Description>Cross-platform MCP server that exposes host webcams/cameras to LLM agents: list devices, capture images, video, and timed frame sequences.</Description>
+    <PackageTags>mcp;modelcontextprotocol;ai;camera;webcam;capture;ffmpeg</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/danielmeza/camera-mcp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageProjectUrl>https://github.com/danielmeza/camera-mcp</PackageProjectUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CameraMcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".mcp/server.json" Pack="true" PackagePath="/.mcp/server.json" />
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Ardalis.SmartEnum" Version="8.2.0" />
+    <PackageReference Include="FlashCap" Version="1.11.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
+    <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
+  </ItemGroup>
+
+  <!-- Opt-in per-RID ffmpeg bundling (dotnet publish -r <rid> -p:BundleFFmpeg=true). -->
+  <Import Project="$(MSBuildThisFileDirectory)../../build/ffmpeg-sources.props" />
+  <Import Project="$(MSBuildThisFileDirectory)../../build/ffmpeg.targets" />
+
+</Project>

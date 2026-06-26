@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "description": "Cross-platform MCP server that exposes host webcams/cameras to LLM agents: list devices, capture images, video, and timed frame sequences.",
+  "name": "io.github.danielmeza/camera-mcp",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "nuget",
+      "registryBaseUrl": "https://api.nuget.org",
+      "identifier": "DanielMeza.CameraMcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [],
+      "environmentVariables": []
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/danielmeza/camera-mcp",
+    "source": "github"
+  }
+}
