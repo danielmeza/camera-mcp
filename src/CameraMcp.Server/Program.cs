@@ -9,7 +9,22 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-var builder = WebApplication.CreateBuilder(args);
+// Pin the content root to the app's own directory instead of the working directory.
+// MCP clients launch this server with THEIR project as the working directory, and the
+// WebApplication.CreateBuilder(args) overload takes that as the content root. The default
+// appsettings.json sources are registered with reloadOnChange: true, and the PhysicalFileProvider
+// behind them opens a FileSystemWatcher with IncludeSubdirectories = true over the content root —
+// one inotify watch per subdirectory on Linux. Against a large workspace that is thousands of
+// watches per process (measured: 27k against a Yocto tree, two agent sessions ≈ 83% of the
+// machine's fs.inotify.max_user_watches), which starves every other watcher on the host until
+// unrelated tools report the filesystem as not supporting file watchers at all.
+// This server ships no appsettings.json and is configured through CameraMcp__* environment
+// variables, so there is nothing in the client's tree worth watching.
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+});
 
 // stdout is reserved for the MCP stdio JSON-RPC stream. Drop the default console provider (which
 // writes to stdout) and route every log record — including Kestrel/hosting messages — to stderr.
